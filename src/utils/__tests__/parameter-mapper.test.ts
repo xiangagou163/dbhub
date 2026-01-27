@@ -106,6 +106,11 @@ describe("Parameter Mapper", () => {
       expect(() => validateParameterStyle(sql, "mysql")).not.toThrow();
     });
 
+    it("should accept positional parameters for tdengine", () => {
+      const sql = "SELECT * FROM meters WHERE ts > ?";
+      expect(() => validateParameterStyle(sql, "tdengine")).not.toThrow();
+    });
+
     it("should accept named parameters for sqlserver", () => {
       const sql = "SELECT * FROM users WHERE id = @p1";
       expect(() => validateParameterStyle(sql, "sqlserver")).not.toThrow();
@@ -130,6 +135,7 @@ describe("Parameter Mapper", () => {
       expect(() => validateParameterStyle(sql, "postgres")).not.toThrow();
       expect(() => validateParameterStyle(sql, "mysql")).not.toThrow();
       expect(() => validateParameterStyle(sql, "sqlserver")).not.toThrow();
+      expect(() => validateParameterStyle(sql, "tdengine")).not.toThrow();
     });
   });
 

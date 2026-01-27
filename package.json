@@ -1,8 +1,8 @@
 {
-  "name": "dbhub",
+  "name": "@xiangagou/dbhub",
   "version": "0.15.0",
   "mcpName": "io.github.bytebase/dbhub",
-  "description": "Minimal, token-efficient Database MCP Server for PostgreSQL, MySQL, SQL Server, SQLite, MariaDB",
+  "description": "Minimal, token-efficient Database MCP Server for PostgreSQL, MySQL, SQL Server, SQLite, MariaDB, TDengine",
   "repository": {
     "type": "git",
     "url": "https://github.com/bytebase/dbhub.git"
@@ -23,7 +23,7 @@
     "build:frontend": "cd frontend && pnpm run build",
     "start": "node dist/index.js",
     "dev": "concurrently --kill-others \"pnpm run dev:backend\" \"pnpm run dev:frontend\"",
-    "dev:backend": "NODE_ENV=development tsx src/index.ts --transport=http",
+    "dev:backend": "cross-env NODE_ENV=development tsx src/index.ts --transport=http",
     "dev:frontend": "cd frontend && pnpm run dev",
     "crossdev": "cross-env NODE_ENV=development tsx src/index.ts",
     "generate:api-types": "openapi-typescript src/api/openapi.yaml -o src/api/openapi.d.ts",
@@ -35,6 +35,9 @@
   "keywords": [],
   "author": "",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@azure/identity": "^4.8.0",
     "@iarna/toml": "^2.2.5",

@@ -176,7 +176,7 @@ export function buildDSNFromEnvParams(): { dsn: string; source: string } | null 
   }
 
   // Validate supported database types
-  const supportedTypes = ['postgres', 'postgresql', 'mysql', 'mariadb', 'sqlserver', 'sqlite'];
+  const supportedTypes = ['postgres', 'postgresql', 'mysql', 'mariadb', 'sqlserver', 'sqlite', 'tdengine'];
   if (!supportedTypes.includes(dbType.toLowerCase())) {
     throw new Error(`Unsupported DB_TYPE: ${dbType}. Supported types: ${supportedTypes.join(', ')}`);
   }
@@ -195,6 +195,9 @@ export function buildDSNFromEnvParams(): { dsn: string; source: string } | null 
         break;
       case 'sqlserver':
         port = '1433';
+        break;
+      case 'tdengine':
+        port = '6041';
         break;
       case 'sqlite':
         // SQLite doesn't use host/port, handle differently
@@ -542,7 +545,7 @@ export async function resolveSourceConfigs(): Promise<{ sources: SourceConfig[];
     const protocol = dsnUrl.protocol.replace(':', '');
 
     // Map protocol to database type
-    let dbType: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite";
+    let dbType: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "tdengine";
     if (protocol === 'postgresql' || protocol === 'postgres') {
       dbType = 'postgres';
     } else if (protocol === 'mysql') {
@@ -553,6 +556,8 @@ export async function resolveSourceConfigs(): Promise<{ sources: SourceConfig[];
       dbType = 'sqlserver';
     } else if (protocol === 'sqlite') {
       dbType = 'sqlite';
+    } else if (protocol === 'tdengine') {
+      dbType = 'tdengine';
     } else {
       throw new Error(`Unsupported database type in DSN: ${protocol}`);
     }

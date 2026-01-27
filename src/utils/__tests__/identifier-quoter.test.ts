@@ -72,6 +72,15 @@ describe("quoteIdentifier", () => {
     });
   });
 
+  describe("TDengine", () => {
+    const dbType: ConnectorType = "tdengine";
+
+    it("should quote identifiers with backticks", () => {
+      expect(quoteIdentifier("metrics", dbType)).toBe("`metrics`");
+      expect(quoteIdentifier("table`name", dbType)).toBe("`table``name`");
+    });
+  });
+
   describe("SQLite", () => {
     const dbType: ConnectorType = "sqlite";
 

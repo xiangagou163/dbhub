@@ -59,6 +59,14 @@ describe("isReadOnlySQL", () => {
       expect(isReadOnlySQL("DESCRIBE users", "mysql")).toBe(true);
     });
 
+    it("should recognize SHOW as read-only for TDengine", () => {
+      expect(isReadOnlySQL("SHOW DATABASES", "tdengine")).toBe(true);
+    });
+
+    it("should recognize DESCRIBE as read-only for TDengine", () => {
+      expect(isReadOnlySQL("DESCRIBE meters", "tdengine")).toBe(true);
+    });
+
     it("should recognize PRAGMA as read-only for SQLite", () => {
       expect(isReadOnlySQL("PRAGMA table_info(users)", "sqlite")).toBe(true);
     });

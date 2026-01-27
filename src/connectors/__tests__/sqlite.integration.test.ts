@@ -11,7 +11,15 @@ class SQLiteTestContainer implements TestContainer {
   constructor(private dbPath: string) {}
   
   getConnectionUri(): string {
-    return `sqlite://${this.dbPath}`;
+    if (this.dbPath === ':memory:') {
+      return 'sqlite:///:memory:';
+    }
+
+    const normalizedPath = this.dbPath.replace(/\\/g, '/');
+    if (path.isAbsolute(this.dbPath)) {
+      return `sqlite:///${normalizedPath}`;
+    }
+    return `sqlite://./${normalizedPath}`;
   }
   
   async stop(): Promise<void> {

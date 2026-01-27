@@ -25,6 +25,8 @@
             |                  |    |              |    |                  |
             |  Other Clients   +--->+              +--->+    MariaDB       |
             |                  |    |              |    |                  |
+            |                  |    |              +--->+    TDengine      |
+            |                  |    |              |    |                  |
             |                  |    |              |    |                  |
             +------------------+    +--------------+    +------------------+
                  MCP Clients           MCP Server             Databases
@@ -33,14 +35,14 @@
 DBHub is a zero-dependency, token efficient MCP server implementing the Model Context Protocol (MCP) server interface. This lightweight gateway allows MCP-compatible clients to connect to and explore different databases:
 
 - **Local Development First**: Zero dependency, token efficient with just two MCP tools to maximize context window
-- **Multi-Database**: PostgreSQL, MySQL, MariaDB, SQL Server, and SQLite through a single interface
+- **Multi-Database**: PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, and TDengine through a single interface
 - **Multi-Connection**: Connect to multiple databases simultaneously with TOML configuration
 - **Guardrails**: Read-only mode, row limiting, and query timeout to prevent runaway operations
 - **Secure Access**: SSH tunneling and SSL/TLS encryption
 
 ## Supported Databases
 
-PostgreSQL, MySQL, SQL Server, MariaDB, and SQLite.
+PostgreSQL, MySQL, SQL Server, MariaDB, SQLite, and TDengine.
 
 ## MCP Tools
 
@@ -77,13 +79,13 @@ docker run --rm --init \
 **NPM:**
 
 ```bash
-npx @bytebase/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname?sslmode=disable"
+npx @xiangagou/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname?sslmode=disable"
 ```
 
 **Demo Mode:**
 
 ```bash
-npx @bytebase/dbhub@latest --transport http --port 8080 --demo
+npx @xiangagou/dbhub@latest --transport http --port 8080 --demo
 ```
 
 See [Command-Line Options](https://dbhub.ai/config/command-line) for all available parameters.

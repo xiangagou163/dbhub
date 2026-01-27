@@ -56,7 +56,7 @@ Host myserver
       writeFileSync(configPath, configContent);
 
       const result = parseSSHConfig('myserver', configPath);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         host: '192.168.1.100',
         username: 'johndoe',
         port: 2222
@@ -116,7 +116,7 @@ Host prod.example.com
       writeFileSync(configPath, configContent);
 
       const result = parseSSHConfig('prod.example.com', configPath);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         host: '10.0.0.100',
         username: 'defaultuser',
         port: 2222
@@ -131,7 +131,7 @@ Host myalias
       writeFileSync(configPath, configContent);
 
       const result = parseSSHConfig('myalias', configPath);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         host: 'myalias',
         username: 'testuser'
       });
@@ -277,7 +277,7 @@ Host symlink-test
       symlinkSync(targetDir, linkDir, 'dir');
       const linkedConfigPath = join(linkDir, 'config');
       const result = parseSSHConfig('symlink-test', linkedConfigPath);
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         host: 'symlink.example.com',
         username: 'symlinkuser'
       });

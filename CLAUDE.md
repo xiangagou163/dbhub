@@ -26,7 +26,8 @@ src/
 │   ├── mysql/           # MySQL connector
 │   ├── mariadb/         # MariaDB connector
 │   ├── sqlserver/       # SQL Server connector
-│   └── sqlite/          # SQLite connector
+│   ├── sqlite/          # SQLite connector
+│   └── tdengine/        # TDengine connector
 ├── tools/               # MCP tool handlers
 │   ├── execute-sql.ts   # SQL execution handler
 │   └── search-objects.ts  # Unified search/list with progressive disclosure
@@ -144,9 +145,10 @@ DBHub supports three configuration methods (in priority order):
   - MySQL: `mysql://user:password@localhost:3306/dbname?sslmode=disable`
   - MariaDB: `mariadb://user:password@localhost:3306/dbname?sslmode=disable`
   - SQL Server: `sqlserver://user:password@localhost:1433/dbname?sslmode=disable`
-  - SQL Server (named instance): `sqlserver://user:password@localhost:1433/dbname?instanceName=ENV1`
-  - SQL Server (NTLM): `sqlserver://user:password@localhost:1433/dbname?authentication=ntlm&domain=MYDOMAIN`
-  - SQLite: `sqlite:///path/to/database.db` or `sqlite:///:memory:`
+- SQL Server (named instance): `sqlserver://user:password@localhost:1433/dbname?instanceName=ENV1`
+- SQL Server (NTLM): `sqlserver://user:password@localhost:1433/dbname?authentication=ntlm&domain=MYDOMAIN`
+- SQLite: `sqlite:///path/to/database.db` or `sqlite:///:memory:`
+- TDengine: `tdengine://user:password@localhost:6041/dbname?sslmode=disable`
 - SSL modes: `sslmode=disable` (no SSL) or `sslmode=require` (SSL without cert verification)
 
 ## Testing Approach

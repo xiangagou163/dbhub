@@ -23,7 +23,7 @@ export interface SSHConfig {
  * Database connection parameters (alternative to DSN)
  */
 export interface ConnectionParams {
-  type: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite";
+  type: "postgres" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "tdengine";
   host?: string;
   port?: number;
   database?: string;

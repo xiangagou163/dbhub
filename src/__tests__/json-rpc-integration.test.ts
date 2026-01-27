@@ -2,29 +2,60 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import net from 'net';
 import os from 'os';
 
 describe('JSON RPC Integration Tests', () => {
   let serverProcess: ChildProcess | null = null;
   let testDbPath: string;
   let baseUrl: string;
-  const testPort = 3001;
+  let testPort: number;
+
+  async function getAvailablePort(): Promise<number> {
+    return await new Promise((resolve, reject) => {
+      const server = net.createServer();
+      server.unref();
+      server.on('error', reject);
+      server.listen(0, () => {
+        const address = server.address();
+        if (!address || typeof address === 'string') {
+          server.close(() => reject(new Error('Failed to acquire an available port')));
+          return;
+        }
+        const { port } = address;
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve(port);
+        });
+      });
+    });
+  }
 
   beforeAll(async () => {
     // Create a temporary SQLite database file
     const tempDir = os.tmpdir();
     testDbPath = path.join(tempDir, `json_rpc_test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.db`);
+    const normalizedDbPath = testDbPath.replace(/\\/g, '/');
+    const dsn = path.isAbsolute(testDbPath)
+      ? `sqlite:///${normalizedDbPath}`
+      : `sqlite://./${normalizedDbPath}`;
+    const tsxCliPath = path.join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.cjs');
+
+    testPort = await getAvailablePort();
     
     baseUrl = `http://localhost:${testPort}`;
     
     // Start the server as a child process
-    serverProcess = spawn('pnpm', ['dev'], {
+    serverProcess = spawn(process.execPath, [tsxCliPath, 'src/index.ts', '--transport=http'], {
       env: {
         ...process.env,
-        DSN: `sqlite://${testDbPath}`,
+        DSN: dsn,
         TRANSPORT: 'http',
         PORT: testPort.toString(),
-        NODE_ENV: 'test'
+        NODE_ENV: 'development'
       },
       stdio: 'pipe'
     });
@@ -121,7 +152,23 @@ describe('JSON RPC Integration Tests', () => {
     
     // Clean up the test database file
     if (testDbPath && fs.existsSync(testDbPath)) {
-      fs.unlinkSync(testDbPath);
+      let removed = false;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          fs.unlinkSync(testDbPath);
+          removed = true;
+          break;
+        } catch (error) {
+          if (attempt < 4) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } else {
+            console.warn(`Failed to cleanup test database file ${testDbPath}: ${error}`);
+          }
+        }
+      }
+      if (!removed && fs.existsSync(testDbPath)) {
+        console.warn(`Test database file still exists: ${testDbPath}`);
+      }
     }
   });
 

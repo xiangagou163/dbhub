@@ -33,10 +33,10 @@ Command-line flags are passed when starting DBHub. These have the highest priori
   ```bash
   # stdio (default) - for Claude Desktop, Claude Code, Cursor
   # No HTTP server started
-  npx @bytebase/dbhub@latest --transport stdio --dsn "..."
+  npx @xiangagou/dbhub@latest --transport stdio --dsn "..."
 
   # http - for web clients, workbench, and remote access
-  npx @bytebase/dbhub@latest --transport http --port 8080 --dsn "..."
+  npx @xiangagou/dbhub@latest --transport http --port 8080 --dsn "..."
   ```
 </ParamField>
 
@@ -46,7 +46,7 @@ Command-line flags are passed when starting DBHub. These have the highest priori
   HTTP server port. Only used when `--transport=http`. Ignored for stdio transport.
 
   ```bash
-  npx @bytebase/dbhub@latest --transport http --port 3000 --dsn "..."
+  npx @xiangagou/dbhub@latest --transport http --port 3000 --dsn "..."
   ```
 </ParamField>
 
@@ -160,7 +160,7 @@ Command-line flags are passed when starting DBHub. These have the highest priori
   export DB_USER=myuser
   export DB_PASSWORD='p@ss:word#123'
   export DB_NAME=mydb
-  npx @bytebase/dbhub@latest
+  npx @xiangagou/dbhub@latest
   ```
 </ParamField>
 
@@ -172,8 +172,8 @@ Command-line flags are passed when starting DBHub. These have the highest priori
   Tools will be named `execute_sql_{id}` for each instance.
 
   ```bash
-  npx @bytebase/dbhub@latest --id prod --dsn "postgres://user:pass@prod-host:5432/db"
-  npx @bytebase/dbhub@latest --id staging --dsn "postgres://user:pass@staging-host:5432/db"
+  npx @xiangagou/dbhub@latest --id prod --dsn "postgres://user:pass@prod-host:5432/db"
+  npx @xiangagou/dbhub@latest --id staging --dsn "postgres://user:pass@staging-host:5432/db"
   ```
 
   Result: `execute_sql_prod` and `execute_sql_staging` tools
@@ -189,7 +189,7 @@ Command-line flags are passed when starting DBHub. These have the highest priori
   Run DBHub with a bundled SQLite sample "employee" database for testing.
 
   ```bash
-  npx @bytebase/dbhub@latest --demo --transport http --port 8080
+  npx @xiangagou/dbhub@latest --demo --transport http --port 8080
   ```
 </ParamField>
 
@@ -201,7 +201,7 @@ Command-line flags are passed when starting DBHub. These have the highest priori
   Automatically loads `./dbhub.toml` if it exists in the current directory.
 
   ```bash
-  npx @bytebase/dbhub@latest --config ./dbhub.toml --transport http --port 8080
+  npx @xiangagou/dbhub@latest --config ./dbhub.toml --transport http --port 8080
   ```
 
   See [TOML Configuration](/config/toml) for complete configuration reference including source options, tool options, SSH tunnels, and custom tools.
@@ -233,19 +233,19 @@ SSH tunnel configuration for connecting to databases through bastion/jump hosts.
 
 ```bash
 # Password auth
-npx @bytebase/dbhub@latest --dsn "..." \
+npx @xiangagou/dbhub@latest --dsn "..." \
   --ssh-host bastion.example.com --ssh-user ubuntu --ssh-password mypassword
 
 # Key-based auth
-npx @bytebase/dbhub@latest --dsn "..." \
+npx @xiangagou/dbhub@latest --dsn "..." \
   --ssh-host bastion.example.com --ssh-user ubuntu --ssh-key ~/.ssh/id_rsa
 
 # ProxyJump (single hop)
-npx @bytebase/dbhub@latest --dsn "..." \
+npx @xiangagou/dbhub@latest --dsn "..." \
   --ssh-host target.internal --ssh-proxy-jump bastion.example.com
 
 # ProxyJump (multi-hop: bastion1 → bastion2 → target)
-npx @bytebase/dbhub@latest --dsn "..." \
+npx @xiangagou/dbhub@latest --dsn "..." \
   --ssh-host target.internal --ssh-proxy-jump "bastion1.com,admin@bastion2:2222"
 ```
 

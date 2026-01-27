@@ -8,20 +8,20 @@ title: "Installation"
   <Tab title="npx">
     ```bash
     # PostgreSQL example
-    npx @bytebase/dbhub@latest \
+    npx @xiangagou/dbhub@latest \
       --transport http \
       --port 8080 \
       --dsn "postgres://user:password@localhost:5432/dbname?sslmode=disable"
 
     # Or use demo mode for testing
-    npx @bytebase/dbhub@latest --transport http --port 8080 --demo
+    npx @xiangagou/dbhub@latest --transport http --port 8080 --demo
     ```
   </Tab>
 
   <Tab title="Global Installation">
     ```bash
     # Install globally
-    npm install -g @bytebase/dbhub@latest
+    npm install -g @xiangagou/dbhub@latest
 
     # Run the server
     dbhub --transport http --port 8080 --dsn "postgres://..."
@@ -108,7 +108,7 @@ Once DBHub is installed and running, configure your MCP client to connect to it.
       For local database connections, use stdio transport:
 
       ```bash
-      claude mcp add --transport stdio dbhub -- npx @bytebase/dbhub@latest --transport stdio --dsn "postgres://user:password@localhost:5432/dbname"
+      claude mcp add --transport stdio dbhub -- npx @xiangagou/dbhub@latest --transport stdio --dsn "postgres://user:password@localhost:5432/dbname"
       ```
 
       <Note>
@@ -125,7 +125,7 @@ Once DBHub is installed and running, configure your MCP client to connect to it.
       This connects to a DBHub server running with HTTP transport:
 
       ```bash
-      npx @bytebase/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
+      npx @xiangagou/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
       ```
       </Tab>
     </Tabs>
@@ -143,7 +143,7 @@ Once DBHub is installed and running, configure your MCP client to connect to it.
             "type": "stdio",
             "command": "npx",
             "args": [
-              "@bytebase/dbhub@latest",
+              "@xiangagou/dbhub@latest",
               "--transport",
               "stdio",
               "--dsn",
@@ -163,7 +163,7 @@ Once DBHub is installed and running, configure your MCP client to connect to it.
             "type": "stdio",
             "command": "npx",
             "args": [
-              "@bytebase/dbhub@latest",
+              "@xiangagou/dbhub@latest",
               "--transport",
               "stdio",
               "--dsn",
@@ -194,7 +194,7 @@ Once DBHub is installed and running, configure your MCP client to connect to it.
     For personal configuration across all projects:
 
     ```bash
-    claude mcp add --scope user dbhub -- npx @bytebase/dbhub@latest --transport stdio --dsn "postgres://user:password@localhost:5432/dbname"
+    claude mcp add --scope user dbhub -- npx @xiangagou/dbhub@latest --transport stdio --dsn "postgres://user:password@localhost:5432/dbname"
     ```
 
     Or manually edit the user configuration file:
@@ -241,7 +241,7 @@ Verify DBHub is loaded:
         "dbhub": {
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--dsn",
@@ -262,7 +262,7 @@ Verify DBHub is loaded:
         "dbhub": {
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--dsn",
@@ -283,7 +283,7 @@ Verify DBHub is loaded:
         "dbhub": {
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--demo"
@@ -329,7 +329,7 @@ Verify DBHub is loaded:
         "dbhub": {
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--dsn",
@@ -348,7 +348,7 @@ Verify DBHub is loaded:
         "dbhub": {
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--dsn",
@@ -390,7 +390,7 @@ Verify DBHub is loaded:
     This connects to a DBHub server running with HTTP transport:
 
     ```bash
-    npx @bytebase/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
+    npx @xiangagou/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
     ```
   </Tab>
 
@@ -403,7 +403,7 @@ Verify DBHub is loaded:
         "project-db": {
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--config",
@@ -434,7 +434,7 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
           "type": "stdio",
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--dsn",
@@ -463,7 +463,7 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
     This connects to a DBHub server running with HTTP transport:
 
     ```bash
-    npx @bytebase/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
+    npx @xiangagou/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
     ```
   </Tab>
 
@@ -485,7 +485,7 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
           "type": "stdio",
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--dsn",
@@ -507,7 +507,7 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
           "type": "stdio",
           "command": "npx",
           "args": [
-            "@bytebase/dbhub@latest",
+            "@xiangagou/dbhub@latest",
             "--transport",
             "stdio",
             "--config",
@@ -529,10 +529,10 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
   <Tab title="CLI">
     ```bash
     # Connect to your database
-    codex mcp add dbhub -- npx @bytebase/dbhub@latest --transport stdio --dsn "postgres://user:password@localhost:5432/dbname"
+    codex mcp add dbhub -- npx @xiangagou/dbhub@latest --transport stdio --dsn "postgres://user:password@localhost:5432/dbname"
 
     # Or use demo mode for testing
-    codex mcp add dbhub -- npx @bytebase/dbhub@latest --transport stdio --demo
+    codex mcp add dbhub -- npx @xiangagou/dbhub@latest --transport stdio --demo
     ```
   </Tab>
 
@@ -541,12 +541,12 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
     # Connect to your database
     [mcp_servers.dbhub]
     command = "npx"
-    args = ["@bytebase/dbhub@latest", "--transport", "stdio", "--dsn", "postgres://user:password@localhost:5432/dbname"]
+    args = ["@xiangagou/dbhub@latest", "--transport", "stdio", "--dsn", "postgres://user:password@localhost:5432/dbname"]
 
     # Or use demo mode for testing
     [mcp_servers.dbhub]
     command = "npx"
-    args = ["@bytebase/dbhub@latest", "--transport", "stdio", "--demo"]
+    args = ["@xiangagou/dbhub@latest", "--transport", "stdio", "--demo"]
     ```
   </Tab>
 
@@ -559,7 +559,7 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
       • dbhub
         • Status: enabled
         • Auth: Unsupported
-        • Command: npx -y @bytebase/dbhub@latest --demo
+        • Command: npx -y @xiangagou/dbhub@latest --demo
         • Tools: execute_sql
         • Resources: schemas (db://schemas)
         • Resource templates: tables_in_schema (db://schemas/{schemaName}/tables), table_structure_in_schema (db://schemas/{schemaName}/
@@ -577,7 +577,7 @@ VS Code has native MCP support through GitHub Copilot. Create `.vscode/mcp.json`
 DBHub must be running as an HTTP server for Dify to connect. Start DBHub with HTTP transport:
 
 ```bash
-npx @bytebase/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
+npx @xiangagou/dbhub@latest --transport http --port 8080 --dsn "postgres://user:password@localhost:5432/dbname"
 ```
 
 **Configuration:**
@@ -603,7 +603,7 @@ Once connected, DBHub tools are available in:
 For multiple databases, use a config file:
 
 ```bash
-npx @bytebase/dbhub@latest --transport http --port 8080 --config /path/to/dbhub.toml
+npx @xiangagou/dbhub@latest --transport http --port 8080 --config /path/to/dbhub.toml
 ```
 
 **Demo Mode:**
@@ -611,7 +611,7 @@ npx @bytebase/dbhub@latest --transport http --port 8080 --config /path/to/dbhub.
 For testing, use the built-in demo database:
 
 ```bash
-npx @bytebase/dbhub@latest --transport http --port 8080 --demo
+npx @xiangagou/dbhub@latest --transport http --port 8080 --demo
 ```
 
 **Limitations:**
@@ -634,7 +634,7 @@ DBHub can be integrated with [LibreChat](https://www.librechat.ai/) using either
         command: npx
         args:
           - -y
-          - "@bytebase/dbhub@latest"
+          - "@xiangagou/dbhub@latest"
           - "--dsn"
           - "postgres://user:password@localhost:5432/dbname"
         timeout: 60000
@@ -649,7 +649,7 @@ DBHub can be integrated with [LibreChat](https://www.librechat.ai/) using either
         command: npx
         args:
           - -y
-          - "@bytebase/dbhub@latest"
+          - "@xiangagou/dbhub@latest"
           - "--demo"
         timeout: 60000
     ```

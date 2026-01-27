@@ -205,7 +205,7 @@ describe('Environment Configuration Tests', () => {
       process.env.DB_NAME = 'db';
 
       expect(() => buildDSNFromEnvParams()).toThrow(
-        'Unsupported DB_TYPE: oracle. Supported types: postgres, postgresql, mysql, mariadb, sqlserver, sqlite'
+        'Unsupported DB_TYPE: oracle. Supported types: postgres, postgresql, mysql, mariadb, sqlserver, sqlite, tdengine'
       );
     });
 

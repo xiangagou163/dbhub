@@ -4,7 +4,7 @@ import type { ConnectorType } from "../connectors/interface.js";
  * Quote a database identifier (table name, schema name, column name) for safe use in SQL queries.
  * Each database has its own identifier quoting rules:
  * - PostgreSQL/SQLite: Double quotes ("identifier")
- * - MySQL/MariaDB: Backticks (`identifier`)
+ * - MySQL/MariaDB/TDengine: Backticks (`identifier`)
  * - SQL Server: Square brackets ([identifier])
  *
  * This function handles:
@@ -16,7 +16,7 @@ import type { ConnectorType } from "../connectors/interface.js";
  * not for user input. User input should always use parameterized queries.
  *
  * @param identifier - The identifier to quote (e.g., table name, schema name)
- * @param dbType - The database type (postgres, mysql, mariadb, sqlite, sqlserver)
+ * @param dbType - The database type (postgres, mysql, mariadb, sqlite, sqlserver, tdengine)
  * @returns The properly quoted identifier
  * @throws Error if identifier contains null bytes or control characters
  */
@@ -40,6 +40,7 @@ export function quoteIdentifier(identifier: string, dbType: ConnectorType): stri
 
     case "mysql":
     case "mariadb":
+    case "tdengine":
       // MySQL and MariaDB use backticks
       // Escape existing backticks by doubling them
       return `\`${identifier.replace(/`/g, "``")}\``;
