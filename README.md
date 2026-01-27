@@ -90,6 +90,31 @@ npx @xiangagou/dbhub@latest --transport http --port 8080 --demo
 
 See [Command-Line Options](https://dbhub.ai/config/command-line) for all available parameters.
 
+### TDengine Configuration
+
+DBHub connects to TDengine via the taosAdapter REST API. Make sure taosAdapter is running and reachable (default port: 6041).
+
+**DSN (recommended):**
+
+```bash
+tdengine://root:taosdata@172.16.122.12:6041/iotkit
+```
+
+**Environment variables:**
+
+```bash
+DB_TYPE=tdengine
+DB_HOST=172.16.122.12
+DB_PORT=6041
+DB_USER=root
+DB_PASSWORD=taosdata
+DB_NAME=iotkit
+```
+
+Notes:
+- REST is stateless. Always include the database name in the DSN (or fully qualify tables in SQL).
+- If you set the database in the DSN, queries like `select * from my_table` work without a `db.table` prefix.
+
 ### Multi-Database Setup
 
 Connect to multiple databases simultaneously using TOML configuration files. Perfect for managing production, staging, and development databases from a single DBHub instance.

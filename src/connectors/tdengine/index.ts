@@ -306,11 +306,11 @@ export class TDengineConnector implements Connector {
     }
 
     const { host, port, useTLS } = this.connectionInfo;
-    const requestPath = "/rest/sql";
+    const requestPath = this.buildRequestPath();
     const body = sql;
     const headers = {
-      "Content-Type": "text/plain; charset=utf-8",
-      "Accept": "application/json",
+      "Content-Type": "text/plain",
+      "Accept": "*/*",
       "Authorization": this.authHeader,
       "Content-Length": Buffer.byteLength(body).toString(),
     };
@@ -368,6 +368,15 @@ export class TDengineConnector implements Connector {
       request.write(body);
       request.end();
     });
+  }
+
+  private buildRequestPath(): string {
+    const database = this.connectionInfo?.database;
+    if (!database) {
+      return "/rest/sql";
+    }
+
+    return `/rest/sql/${encodeURIComponent(database)}`;
   }
 }
 
