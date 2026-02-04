@@ -1,5 +1,5 @@
 {
-  "name": "dbhub",
+  "name": "@xiangagou/dbhub",
   "version": "0.16.0",
   "mcpName": "io.github.bytebase/dbhub",
   "description": "Minimal, token-efficient Database MCP Server for PostgreSQL, MySQL, SQL Server, SQLite, MariaDB, TDengine",
@@ -42,7 +42,7 @@
     "@azure/identity": "^4.8.0",
     "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.25.1",
-    "better-sqlite3": "^11.9.0",
+    "better-sqlite3": "^12.4.6",
     "dotenv": "^16.4.7",
     "express": "^4.18.2",
     "mariadb": "^3.4.0",
