@@ -1,6 +1,6 @@
 {
   "name": "@xiangagou/dbhub",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "mcpName": "io.github.bytebase/dbhub",
   "description": "Minimal, token-efficient Database MCP Server for PostgreSQL, MySQL, SQL Server, SQLite, MariaDB, TDengine",
   "repository": {
@@ -22,7 +22,7 @@
     "build:backend": "pnpm run generate:api-types && tsup",
     "build:frontend": "cd frontend && pnpm run build",
     "start": "node dist/index.js",
-    "prepublishOnly": "pnpm run build:backend",
+    "prepublishOnly": "pnpm run build",
     "dev": "concurrently --kill-others \"pnpm run dev:backend\" \"pnpm run dev:frontend\"",
     "dev:backend": "cross-env NODE_ENV=development tsx src/index.ts --transport=http",
     "dev:frontend": "cd frontend && pnpm run dev",
