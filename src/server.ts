@@ -160,16 +160,39 @@ See documentation for more details on configuring database connections.
       app.use((req, res, next) => {
         // Validate Origin header to prevent DNS rebinding attacks
         const origin = req.headers.origin;
-        if (origin && !origin.startsWith('http://localhost') && !origin.startsWith('https://localhost')) {
-          return res.status(403).json({ error: 'Forbidden origin' });
+        const host = req.headers.host ?? "";
+        const allowedOrigins = (process.env.DBHUB_ALLOWED_ORIGINS ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+
+        const isLocalOrigin = (value: string) =>
+          value.startsWith("http://localhost") ||
+          value.startsWith("https://localhost") ||
+          value.startsWith("http://127.0.0.1") ||
+          value.startsWith("https://127.0.0.1");
+
+        const isSameHostOrigin = (value: string) => {
+          try {
+            return new URL(value).host === host;
+          } catch {
+            return false;
+          }
+        };
+
+        const isAllowedOrigin = (value: string) =>
+          isLocalOrigin(value) || isSameHostOrigin(value) || allowedOrigins.includes(value);
+
+        if (origin && !isAllowedOrigin(origin)) {
+          return res.status(403).json({ error: "Forbidden origin" });
         }
 
-        res.header('Access-Control-Allow-Origin', origin || 'http://localhost');
-        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.header('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id');
-        res.header('Access-Control-Allow-Credentials', 'true');
+        res.header("Access-Control-Allow-Origin", origin || "http://localhost");
+        res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.header("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id");
+        res.header("Access-Control-Allow-Credentials", "true");
 
-        if (req.method === 'OPTIONS') {
+        if (req.method === "OPTIONS") {
           return res.sendStatus(200);
         }
         next();
