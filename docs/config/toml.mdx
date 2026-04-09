@@ -11,6 +11,65 @@ TOML configuration enables:
 - **Per-source settings**: Configure timeouts, SSL, SSH tunnels, and lazy connections individually per database
 - **Per-tool settings**: Apply different restrictions (readonly, max_rows) per tool
 - **Custom tools**: Define reusable, parameterized SQL operations as MCP tools
+- **Environment variable interpolation**: Use `${VAR}` syntax to avoid hardcoding credentials
+- **Hot reload**: Automatically detect config changes and reload connections without restarting
+
+## Hot Reload
+
+When using TOML configuration, DBHub automatically watches `dbhub.toml` for changes and reloads database connections without requiring a server restart.
+
+**How it works:**
+
+1. DBHub detects file changes and waits 500ms (debounce) to handle editors that write in multiple steps
+2. The new configuration is parsed and validated — if invalid, existing connections are preserved
+3. All database connections are disconnected and reconnected with the new configuration
+4. If reconnection fails, DBHub automatically rolls back to the previous working configuration
+
+```
+# Edit dbhub.toml while DBHub is running — changes apply automatically
+# No server restart needed
+```
+
+<Note>
+**STDIO transport limitation:** In STDIO mode (the default for Claude Desktop, Cursor, etc.), hot reload updates the underlying database connections and tool settings, but clients won't see newly added or removed tools until a full server restart. This is because STDIO clients discover tools once at startup.
+
+HTTP transport (`--transport http`) creates a fresh server per request, so all changes — including added/removed tools — take effect immediately.
+</Note>
+
+## Environment Variable Interpolation
+
+Use `${VAR_NAME}` syntax to reference environment variables in any string value. Variables are resolved from the process environment at config load time.
+
+This lets teams share a single `dbhub.toml` without hardcoding credentials:
+
+```toml dbhub.toml
+[[sources]]
+id = "production"
+dsn = "postgres://readonly_user:${DB_PASSWORD}@db.example.com:5432/mydb"
+
+[[sources]]
+id = "staging"
+type = "mysql"
+host = "${STAGING_HOST}"
+database = "myapp"
+user = "root"
+password = "${STAGING_PASSWORD}"
+ssh_host = "bastion.example.com"
+ssh_password = "${SSH_PASSWORD}"
+```
+
+```bash
+# Set env vars, then start DBHub
+export DB_PASSWORD="s3cret"
+export STAGING_HOST="staging.example.com"
+export STAGING_PASSWORD="staging_pass"
+export SSH_PASSWORD="ssh_pass"
+npx @bytebase/dbhub@latest --config dbhub.toml
+```
+
+<Note>
+Unresolved variables (where the environment variable is not set) are left as the literal `${VAR_NAME}` string. No error is thrown for missing variables.
+</Note>
 
 ## Configuration Structure
 
@@ -67,6 +126,19 @@ Sources define database connections. Each source represents a database that DBHu
   ```toml
   [[sources]]
   id = "production"
+  ```
+</ParamField>
+
+### description
+
+<ParamField path="description" type="string">
+  Human-readable description of this data source. Helps AI models understand the purpose and contents of each database when multiple sources are configured.
+
+  ```toml
+  [[sources]]
+  id = "production"
+  description = "Production PostgreSQL database containing customer and order data"
+  dsn = "postgres://user:pass@localhost:5432/mydb"
   ```
 </ParamField>
 
@@ -281,6 +353,27 @@ Sources define database connections. Each source represents a database that DBHu
   ```
 </ParamField>
 
+### search_path
+
+<ParamField path="search_path" type="string">
+  Comma-separated list of PostgreSQL schema names to set as the session `search_path`. The first schema in the list becomes the default schema for all discovery methods (`getTables`, `getTableSchema`, etc.).
+
+  **PostgreSQL only.**
+
+  ```toml
+  [[sources]]
+  id = "production"
+  dsn = "postgres://user:pass@localhost:5432/mydb"
+  search_path = "myschema,public"
+  ```
+
+  Without `search_path`, DBHub defaults to the `public` schema for all schema discovery operations.
+
+  <Note>
+  This option is **only available via TOML**. It is not supported as a DSN query parameter.
+  </Note>
+</ParamField>
+
 ### SSH Tunnel Options
 
 <ParamField path="ssh_*" type="group">
@@ -295,10 +388,12 @@ Sources define database connections. Each source represents a database that DBHu
   ssh_host = "bastion.example.com"
   ssh_port = 22
   ssh_user = "ubuntu"
-  ssh_key = "~/.ssh/id_rsa"
+  ssh_key = "~/.ssh/id_rsa"  # File path or base64-encoded key
   ssh_passphrase = "my_key_passphrase"  # Optional
   ssh_proxy_jump = "jump1.example.com,admin@jump2.internal:2222"
   ```
+
+  `ssh_key` accepts either a file path or a base64-encoded private key. DBHub automatically detects the format.
 
   See [Command-Line Options - SSH Tunnel](/config/command-line#ssh-tunnel-options) for complete documentation and examples.
 </ParamField>
@@ -567,6 +662,7 @@ default = 10
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | ✅ | Unique source identifier |
+| `description` | string | ❌ | Human-readable description of the data source |
 | `dsn` | string | ✅ | Database connection string |
 | `lazy` | boolean | ❌ | Defer connection until first query (default: `false`) |
 | `connection_timeout` | number | ❌ | Connection timeout (seconds) |
@@ -575,11 +671,12 @@ default = 10
 | `instanceName` | string | ❌ | SQL Server named instance |
 | `authentication` | string | ❌ | SQL Server auth method |
 | `domain` | string | ❌ | Windows domain (NTLM) |
+| `search_path` | string | ❌ | PostgreSQL schema search path (comma-separated) |
 | `ssh_host` | string | ❌ | SSH server hostname |
 | `ssh_port` | number | ❌ | SSH server port (default: 22) |
 | `ssh_user` | string | ❌ | SSH username |
 | `ssh_password` | string | ❌ | SSH password |
-| `ssh_key` | string | ❌ | SSH private key path |
+| `ssh_key` | string | ❌ | SSH private key path or base64-encoded key |
 | `ssh_passphrase` | string | ❌ | SSH key passphrase |
 | `ssh_proxy_jump` | string | ❌ | ProxyJump hosts |
 

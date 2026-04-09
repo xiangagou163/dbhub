@@ -11,7 +11,7 @@ import {
   ExecuteOptions,
   ConnectorConfig,
 } from "../interface.js";
-import { DefaultAzureCredential } from "@azure/identity";
+import { isDriverNotInstalled } from "../../utils/module-loader.js";
 import { SafeURL } from "../../utils/safe-url.js";
 import { obfuscateDSNPassword } from "../../utils/dsn-obfuscate.js";
 import { SQLRowLimiter } from "../../utils/sql-row-limiter.js";
@@ -94,6 +94,17 @@ export class SQLServerDSNParser implements DSNParser {
       // Handle authentication types
       switch (options.authentication) {
         case "azure-active-directory-access-token": {
+          let DefaultAzureCredential: typeof import("@azure/identity")["DefaultAzureCredential"];
+          try {
+            ({ DefaultAzureCredential } = await import("@azure/identity"));
+          } catch (importError) {
+            if (isDriverNotInstalled(importError, "@azure/identity")) {
+              throw new Error(
+                'Azure AD authentication requires the "@azure/identity" package. Install it with: pnpm add @azure/identity'
+              );
+            }
+            throw importError;
+          }
           try {
             const credential = new DefaultAzureCredential();
             const token = await credential.getToken("https://database.windows.net/");
@@ -361,25 +372,72 @@ export class SQLServerConnector implements Connector {
         .input("schema", sql.VarChar, schemaToUse);
 
       const query = `
-          SELECT COLUMN_NAME as    column_name,
-                 DATA_TYPE as      data_type,
-                 IS_NULLABLE as    is_nullable,
-                 COLUMN_DEFAULT as column_default
-          FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_NAME = @tableName
-            AND TABLE_SCHEMA = @schema
-          ORDER BY ORDINAL_POSITION
+          SELECT c.COLUMN_NAME as    column_name,
+                 c.DATA_TYPE as      data_type,
+                 c.IS_NULLABLE as    is_nullable,
+                 c.COLUMN_DEFAULT as column_default,
+                 ep.value as         description
+          FROM INFORMATION_SCHEMA.COLUMNS c
+          LEFT JOIN sys.columns sc
+            ON sc.name = c.COLUMN_NAME
+            AND sc.object_id = OBJECT_ID(QUOTENAME(c.TABLE_SCHEMA) + '.' + QUOTENAME(c.TABLE_NAME))
+          LEFT JOIN sys.extended_properties ep
+            ON ep.major_id = sc.object_id
+            AND ep.minor_id = sc.column_id
+            AND ep.name = 'MS_Description'
+          WHERE c.TABLE_NAME = @tableName
+            AND c.TABLE_SCHEMA = @schema
+          ORDER BY c.ORDINAL_POSITION
       `;
 
       const result = await request.query(query);
 
-      return result.recordset;
+      // Normalize empty string comments to null for token-efficient output
+      return result.recordset.map((row: any) => ({
+        ...row,
+        description: row.description || null,
+      }));
     } catch (error) {
       throw new Error(`Failed to get schema for table ${tableName}: ${(error as Error).message}`);
     }
   }
 
-  async getStoredProcedures(schema?: string): Promise<string[]> {
+  async getTableComment(tableName: string, schema?: string): Promise<string | null> {
+    if (!this.connection) {
+      throw new Error("Not connected to SQL Server database");
+    }
+
+    try {
+      const schemaToUse = schema || "dbo";
+
+      const request = this.connection
+        .request()
+        .input("tableName", sql.VarChar, tableName)
+        .input("schema", sql.VarChar, schemaToUse);
+
+      const query = `
+          SELECT ep.value as table_comment
+          FROM sys.extended_properties ep
+          JOIN sys.tables t ON ep.major_id = t.object_id
+          JOIN sys.schemas s ON t.schema_id = s.schema_id
+          WHERE ep.minor_id = 0
+            AND ep.name = 'MS_Description'
+            AND t.name = @tableName
+            AND s.name = @schema
+      `;
+
+      const result = await request.query(query);
+
+      if (result.recordset.length > 0) {
+        return result.recordset[0].table_comment || null;
+      }
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async getStoredProcedures(schema?: string, routineType?: "procedure" | "function"): Promise<string[]> {
     if (!this.connection) {
       throw new Error("Not connected to SQL Server database");
     }
@@ -390,11 +448,21 @@ export class SQLServerConnector implements Connector {
 
       const request = this.connection.request().input("schema", sql.VarChar, schemaToUse);
 
+      // Build routine type filter
+      let typeFilter: string;
+      if (routineType === "function") {
+        typeFilter = "AND ROUTINE_TYPE = 'FUNCTION'";
+      } else if (routineType === "procedure") {
+        typeFilter = "AND ROUTINE_TYPE = 'PROCEDURE'";
+      } else {
+        typeFilter = "AND (ROUTINE_TYPE = 'PROCEDURE' OR ROUTINE_TYPE = 'FUNCTION')";
+      }
+
       const query = `
           SELECT ROUTINE_NAME
           FROM INFORMATION_SCHEMA.ROUTINES
           WHERE ROUTINE_SCHEMA = @schema
-            AND (ROUTINE_TYPE = 'PROCEDURE' OR ROUTINE_TYPE = 'FUNCTION')
+            ${typeFilter}
           ORDER BY ROUTINE_NAME
       `;
 

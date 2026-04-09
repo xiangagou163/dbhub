@@ -37,13 +37,28 @@ export class SSHTunnel {
       const jumpHosts = config.proxyJump ? parseJumpHosts(config.proxyJump) : [];
 
       // Read the private key once (shared by all connections)
+      // Supports both file paths and base64-encoded key content
       let privateKeyBuffer: Buffer | undefined;
       if (config.privateKey) {
         try {
           const resolvedKeyPath = resolveSymlink(config.privateKey);
           privateKeyBuffer = readFileSync(resolvedKeyPath);
-        } catch (error) {
-          throw new Error(`Failed to read private key file: ${error instanceof Error ? error.message : String(error)}`);
+        } catch {
+          // Not a readable file — try base64 decode
+          try {
+            const decoded = Buffer.from(config.privateKey, 'base64');
+            const text = decoded.toString('utf8');
+            if (text.includes('PRIVATE KEY')) {
+              privateKeyBuffer = decoded;
+            } else {
+              throw new Error(`SSH key is neither a valid file path nor a base64-encoded private key`);
+            }
+          } catch (decodeError) {
+            if (decodeError instanceof Error && decodeError.message.includes('neither a valid file path')) {
+              throw decodeError;
+            }
+            throw new Error(`SSH key is neither a valid file path nor a base64-encoded private key`);
+          }
         }
       }
 
@@ -94,7 +109,9 @@ export class SSHTunnel {
           privateKey,
           targetConfig.passphrase,
           previousStream,
-          `jump host ${i + 1}`
+          `jump host ${i + 1}`,
+          targetConfig.keepaliveInterval,
+          targetConfig.keepaliveCountMax
         );
 
         // Forward to the next host
@@ -126,7 +143,9 @@ export class SSHTunnel {
       privateKey,
       targetConfig.passphrase,
       previousStream,
-      jumpHosts.length > 0 ? 'target host' : undefined
+      jumpHosts.length > 0 ? 'target host' : undefined,
+      targetConfig.keepaliveInterval,
+      targetConfig.keepaliveCountMax
     );
 
     this.sshClients.push(finalClient);
@@ -142,7 +161,9 @@ export class SSHTunnel {
     privateKey: Buffer | undefined,
     passphrase: string | undefined,
     sock: Duplex | undefined,
-    label: string | undefined
+    label: string | undefined,
+    keepaliveInterval?: number,
+    keepaliveCountMax?: number
   ): Promise<Client> {
     return new Promise((resolve, reject) => {
       const client = new Client();
@@ -164,6 +185,18 @@ export class SSHTunnel {
       }
       if (sock) {
         sshConfig.sock = sock;
+      }
+      if (keepaliveInterval !== undefined) {
+        if (Number.isNaN(keepaliveInterval) || keepaliveInterval < 0) {
+          const desc = label || `${hostInfo.host}:${hostInfo.port}`;
+          console.warn(
+            `Invalid SSH keepaliveInterval (${keepaliveInterval}) for ${desc}; ` +
+            'keepalive configuration will be ignored.'
+          );
+        } else if (keepaliveInterval > 0) {
+          sshConfig.keepaliveInterval = keepaliveInterval * 1000; // Convert seconds to milliseconds
+          sshConfig.keepaliveCountMax = keepaliveCountMax ?? 3;
+        }
       }
 
       const onError = (err: Error) => {

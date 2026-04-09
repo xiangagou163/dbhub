@@ -17,6 +17,10 @@ export interface SSHConfig {
    * Comma-separated list of jump hosts: "jump1.example.com,user@jump2.example.com:2222"
    */
   ssh_proxy_jump?: string;
+  /** Interval in seconds between keepalive packets (default: 0 = disabled) */
+  ssh_keepalive_interval?: number;
+  /** Maximum number of missed keepalive responses before disconnecting (default: 3) */
+  ssh_keepalive_count_max?: number;
 }
 
 /**
@@ -29,6 +33,8 @@ export interface ConnectionParams {
   database?: string;
   user?: string;
   password?: string;
+  aws_iam_auth?: boolean; // Enable AWS IAM auth token generation for RDS
+  aws_region?: string; // AWS region required when aws_iam_auth is enabled
   instanceName?: string; // SQL Server named instance support
   sslmode?: "disable" | "require"; // SSL mode for network databases (not applicable to SQLite)
   // SQL Server authentication options
@@ -47,6 +53,7 @@ export interface SourceConfig extends ConnectionParams, SSHConfig {
   query_timeout?: number; // Query timeout in seconds (PostgreSQL, MySQL, MariaDB, SQL Server)
   init_script?: string; // Optional SQL script to run on connection (for demo mode or initialization)
   lazy?: boolean; // Defer connection until first query (default: false)
+  search_path?: string; // Comma-separated list of schemas for PostgreSQL search_path (e.g., "myschema,public")
 }
 
 /**

@@ -8,6 +8,13 @@ export default defineConfig({
   dts: true,
   clean: true,
   outDir: 'dist',
+  // Optional runtime-loaded dependencies (database drivers and cloud auth
+  // packages) are declared as optionalDependencies and loaded via dynamic
+  // import(). Database drivers must be external so tsup does not bundle their
+  // CJS code into ESM chunks (which causes "Dynamic require of X is not
+  // supported"). Cloud auth packages are externalized to keep their large
+  // dependency trees out of the bundle.
+  external: ['pg', 'mysql2', 'mariadb', 'mssql', 'better-sqlite3', '@aws-sdk/rds-signer', '@azure/identity'],
   // Copy the employee-sqlite demo data to dist
   async onSuccess() {
     // Create target directory

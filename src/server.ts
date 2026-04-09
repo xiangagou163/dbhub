@@ -14,6 +14,7 @@ import { listSources, getSource } from "./api/sources.js";
 import { listRequests } from "./api/requests.js";
 import { generateStartupTable, buildSourceDisplayInfo } from "./utils/startup-table.js";
 import { getToolsForSource } from "./utils/tool-metadata.js";
+import { startConfigWatcher } from "./utils/config-watcher.js";
 
 // Create __dirname equivalent for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -101,6 +102,15 @@ See documentation for more details on configuring database connections.
     });
     console.error("Tool registry initialized");
 
+    // Start watching TOML config file for hot reload (only when using TOML config).
+    // In STDIO mode, tool list is registered once — hot reload updates connections and
+    // tool registry, but STDIO clients won't see added/removed tools without restart.
+    // HTTP transport creates a new server per request, so tool changes apply immediately.
+    const stopConfigWatcher = startConfigWatcher({
+      connectorManager,
+      initialTools: sourceConfigsData.tools,
+    });
+
     // Create MCP server factory function for HTTP transport
     // Note: This must be created AFTER ConnectorManager is initialized
     const createServer = () => {
@@ -148,6 +158,9 @@ See documentation for more details on configuring database connections.
     );
     console.error(generateStartupTable(sourceDisplayInfos));
 
+    // Clean up config watcher when the process is exiting (covers both transports)
+    process.on("exit", () => { stopConfigWatcher?.(); });
+
     // Set up transport-specific server
     if (transportData.type === "http") {
       // HTTP transport: Start Express server with MCP endpoint and workbench
@@ -156,9 +169,12 @@ See documentation for more details on configuring database connections.
       // Enable JSON parsing
       app.use(express.json());
 
-      // Handle CORS and security headers
+      // DNS rebinding protection: reject cross-origin requests where the
+      // Origin hostname doesn't match the Host hostname.  Browser-based
+      // attacks (the DNS rebinding threat model) always send an Origin
+      // header on cross-origin fetches.  Non-browser MCP clients don't
+      // send Origin at all and are unaffected.
       app.use((req, res, next) => {
-        // Validate Origin header to prevent DNS rebinding attacks
         const origin = req.headers.origin;
         const host = req.headers.host ?? "";
         const allowedOrigins = (process.env.DBHUB_ALLOWED_ORIGINS ?? "")
@@ -271,12 +287,24 @@ See documentation for more details on configuring database connections.
       await server.connect(transport);
       console.error("MCP server running on stdio");
 
-      // Listen for SIGINT to gracefully shut down
-      process.on("SIGINT", async () => {
+      let isShuttingDown = false;
+      const shutdown = async () => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
         console.error("Shutting down...");
         await transport.close();
+        await connectorManager.disconnect();
         process.exit(0);
-      });
+      };
+
+      // Listen for SIGINT/SIGTERM to gracefully shut down
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+
+      // Exit when stdin closes (parent process terminated).
+      // On Windows, SIGINT/SIGTERM are not reliably sent when the parent
+      // process exits — detecting stdin EOF is the portable way to handle this.
+      process.stdin.on("end", shutdown);
     }
   } catch (err) {
     console.error("Fatal error:", err);

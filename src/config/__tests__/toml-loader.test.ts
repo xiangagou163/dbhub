@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadTomlConfig, buildDSNFromSource } from '../toml-loader.js';
+import { loadTomlConfig, buildDSNFromSource, interpolateEnvVars } from '../toml-loader.js';
 import type { SourceConfig } from '../../types/config.js';
 import fs from 'fs';
 import path from 'path';
@@ -680,6 +680,67 @@ domain = "MYDOMAIN"
       });
     });
 
+    describe('AWS IAM auth validation', () => {
+      it('should accept aws_iam_auth for MySQL without password', () => {
+        const tomlContent = `
+[[sources]]
+id = "mysql_iam"
+type = "mysql"
+host = "mydb.abc123.eu-west-1.rds.amazonaws.com"
+database = "mydb"
+user = "dbuser@example.com"
+aws_iam_auth = true
+aws_region = "eu-west-1"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0]).toMatchObject({
+          id: 'mysql_iam',
+          type: 'mysql',
+          host: 'mydb.abc123.eu-west-1.rds.amazonaws.com',
+          database: 'mydb',
+          user: 'dbuser@example.com',
+          aws_iam_auth: true,
+          aws_region: 'eu-west-1',
+        });
+        expect(result?.sources[0].password).toBeUndefined();
+      });
+
+      it('should throw error when aws_iam_auth is enabled without aws_region', () => {
+        const tomlContent = `
+[[sources]]
+id = "mysql_iam_missing_region"
+type = "mysql"
+host = "mydb.abc123.eu-west-1.rds.amazonaws.com"
+database = "mydb"
+user = "dbuser@example.com"
+aws_iam_auth = true
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('aws_region is not specified');
+      });
+
+      it('should throw error when aws_iam_auth is used with unsupported database type', () => {
+        const tomlContent = `
+[[sources]]
+id = "sqlserver_iam"
+type = "sqlserver"
+host = "localhost"
+database = "master"
+user = "sa"
+aws_iam_auth = true
+aws_region = "eu-west-1"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('only supported for postgres, mysql, and mariadb');
+      });
+    });
+
     describe('query_timeout validation', () => {
       it('should accept valid query_timeout', () => {
         const tomlContent = `
@@ -735,6 +796,77 @@ query_timeout = 120
         expect(result).toBeTruthy();
         expect(result?.sources[0].connection_timeout).toBe(30);
         expect(result?.sources[0].query_timeout).toBe(120);
+      });
+    });
+
+    describe('search_path validation', () => {
+      it('should accept search_path for PostgreSQL source', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/testdb"
+search_path = "myschema,public"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].search_path).toBe('myschema,public');
+      });
+
+      it('should accept single schema in search_path', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/testdb"
+search_path = "myschema"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].search_path).toBe('myschema');
+      });
+
+      it('should throw error when search_path is used with non-PostgreSQL source', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "mysql://user:pass@localhost:3306/testdb"
+search_path = "myschema"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('only supported for PostgreSQL');
+      });
+
+      it('should throw error when search_path is used with SQLite', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "sqlite"
+database = "/path/to/database.db"
+search_path = "myschema"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('only supported for PostgreSQL');
+      });
+
+      it('should work without search_path (optional field)', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/testdb"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].search_path).toBeUndefined();
       });
     });
   });
@@ -1031,6 +1163,36 @@ query_timeout = 120
 
       expect(dsn).toContain('sqlserver://');
       expect(dsn).toContain(':@'); // empty password
+    });
+
+    it('should allow missing password when aws_iam_auth is enabled', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        host: 'mydb.abc123.eu-west-1.rds.amazonaws.com',
+        database: 'mydb',
+        user: 'dbuser@example.com',
+        aws_iam_auth: true,
+        aws_region: 'eu-west-1',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://dbuser%40example.com:@mydb.abc123.eu-west-1.rds.amazonaws.com:5432/mydb');
+    });
+
+    it('should still require password for unsupported aws_iam_auth types', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'sqlserver',
+        host: 'localhost',
+        database: 'master',
+        user: 'sa',
+        aws_iam_auth: true,
+        aws_region: 'eu-west-1',
+      };
+
+      expect(() => buildDSNFromSource(source)).toThrow('password is required');
     });
 
     it('should use custom port when provided', () => {
@@ -1339,6 +1501,133 @@ max_rows = 0
       fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
 
       expect(() => loadTomlConfig()).toThrow('invalid max_rows');
+    });
+  });
+
+  describe('environment variable interpolation', () => {
+    const originalEnv = { ...process.env };
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    afterEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    it('should interpolate ${VAR} in DSN strings', () => {
+      process.env.TEST_DB_PASSWORD = 's3cret';
+      const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:\${TEST_DB_PASSWORD}@localhost:5432/testdb"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].dsn).toBe('postgres://user:s3cret@localhost:5432/testdb');
+    });
+
+    it('should interpolate multiple variables in a single string', () => {
+      process.env.TEST_DB_USER = 'admin';
+      process.env.TEST_DB_PASSWORD = 'p@ss';
+      const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://\${TEST_DB_USER}:\${TEST_DB_PASSWORD}@localhost:5432/testdb"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].dsn).toBe('postgres://admin:p@ss@localhost:5432/testdb');
+    });
+
+    it('should interpolate variables in connection parameter fields', () => {
+      process.env.TEST_DB_HOST = 'db.example.com';
+      process.env.TEST_DB_PASSWORD = 'secret';
+      const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "\${TEST_DB_HOST}"
+database = "mydb"
+user = "admin"
+password = "\${TEST_DB_PASSWORD}"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].host).toBe('db.example.com');
+      expect(result?.sources[0].password).toBe('secret');
+    });
+
+    it('should interpolate variables in SSH fields', () => {
+      process.env.TEST_SSH_PASSWORD = 'sshpass';
+      const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/testdb"
+ssh_host = "bastion.example.com"
+ssh_user = "tunnel"
+ssh_password = "\${TEST_SSH_PASSWORD}"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].ssh_password).toBe('sshpass');
+    });
+
+    it('should leave unresolved variables as-is', () => {
+      delete process.env.NONEXISTENT_VAR;
+      const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:\${NONEXISTENT_VAR}@localhost:5432/testdb"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
+      expect(result?.sources[0].dsn).toBe('postgres://user:${NONEXISTENT_VAR}@localhost:5432/testdb');
+    });
+
+    it('should not affect non-string values', () => {
+      const result = interpolateEnvVars({ port: 5432, enabled: true, items: [1, 2] });
+      expect(result).toEqual({ port: 5432, enabled: true, items: [1, 2] });
+    });
+
+    it('should preserve Date objects from TOML datetime fields', () => {
+      const date = new Date('2024-01-01T00:00:00Z');
+      const result = interpolateEnvVars({ name: 'test', created: date });
+      expect((result as any).created).toBeInstanceOf(Date);
+      expect((result as any).created.toISOString()).toBe('2024-01-01T00:00:00.000Z');
+    });
+
+    it('should interpolate variables in custom tool statements', () => {
+      process.env.TEST_SCHEMA = 'production';
+      const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/testdb"
+
+[[tools]]
+name = "my_tool"
+source = "test_db"
+description = "Query \${TEST_SCHEMA} schema"
+statement = "SELECT * FROM \${TEST_SCHEMA}.users"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
+      expect(result?.tools?.[0]).toMatchObject({
+        description: 'Query production schema',
+        statement: 'SELECT * FROM production.users',
+      });
     });
   });
 });
