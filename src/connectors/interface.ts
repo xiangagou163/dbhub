@@ -7,9 +7,28 @@ export type ConnectorType = "postgres" | "mysql" | "mariadb" | "sqlite" | "sqlse
  * Database Connector Interface
  * This defines the contract that all database connectors must implement.
  */
+/**
+ * An informational (non-error) message emitted by the database during query
+ * execution, e.g. SQL Server STATISTICS TIME/IO and PRINT output, or
+ * PostgreSQL NOTICE/WARNING. Modeled to be cross-database: only `text` is
+ * guaranteed, the rest are populated when the driver exposes them.
+ */
+export interface DatabaseMessage {
+  /** Human-readable message text */
+  text: string;
+  /** Severity indicator where available; interpret per database (PostgreSQL: level name like NOTICE/WARNING; SQL Server: numeric severity class as a string) */
+  severity?: string;
+  /** Database-specific message code (PostgreSQL: SQLSTATE; SQL Server: message number) */
+  code?: string | number;
+  /** 1-based line number within the SQL batch that produced the message, when reported */
+  line?: number;
+}
+
 export interface SQLResult {
   rows: any[];
   rowCount: number;
+  /** Informational messages from the database (e.g. SQL Server STATISTICS TIME/IO, PRINT output) */
+  messages?: DatabaseMessage[];
 }
 
 export interface TableColumn {
@@ -73,6 +92,12 @@ export interface ConnectorConfig {
    * Sets the session search_path and uses the first schema as default for discovery methods.
    */
   searchPath?: string;
+  /**
+   * MySQL/MariaDB timezone setting.
+   * Controls how the driver interprets DATETIME values: "Z" (UTC), "local", or "±HH:MM" (e.g., "+09:00").
+   * Passed through to the mysql2 `timezone` connection option.
+   */
+  timezone?: string;
 }
 
 /**
@@ -132,15 +157,39 @@ export interface Connector {
   getSchemas(): Promise<string[]>;
 
   /**
+   * Get the schema that searches should default to when no schema is specified.
+   *
+   * Returns a single schema name when the connection is scoped to one (e.g. the
+   * database named in a MySQL/MariaDB DSN), or null when there is no configured
+   * scope and callers should fall back to getSchemas() (the full list).
+   *
+   * Connectors whose getSchemas() is already scoped to the connected database
+   * (PostgreSQL, SQL Server, SQLite) may omit this or return null.
+   * @returns Promise with the default schema name, or null for the full list
+   */
+  getDefaultSchema?(): Promise<string | null>;
+
+  /**
    * Get all tables in the database or in a specific schema
    * @param schema Optional schema name. If not provided, implementation should use the default schema:
    *   - PostgreSQL: 'public' schema
    *   - SQL Server: 'dbo' schema
    *   - MySQL: Current active database from connection (DATABASE())
    *   - SQLite: Main database (schema concept doesn't exist in SQLite)
-   * @returns Promise with array of table names
+   * @returns Promise with array of table names (excludes views)
    */
   getTables(schema?: string): Promise<string[]>;
+
+  /**
+   * Get all views in the database or in a specific schema
+   * @param schema Optional schema name. If not provided, implementation should use the default schema:
+   *   - PostgreSQL: 'public' schema
+   *   - SQL Server: 'dbo' schema
+   *   - MySQL: Current active database from connection (DATABASE())
+   *   - SQLite: Main database (schema concept doesn't exist in SQLite)
+   * @returns Promise with array of view names
+   */
+  getViews(schema?: string): Promise<string[]>;
 
   /**
    * Get schema information for a specific table

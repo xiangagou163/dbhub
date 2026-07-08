@@ -212,6 +212,12 @@ Sources define database connections. Each source represents a database that DBHu
       ```
     </Tab>
   </Tabs>
+
+  <Note>
+  **Mixing `dsn` with individual fields.** A `dsn` already encodes the connection identity (type, host, port, database, user, password). Fields that can also live in the DSN query string — `sslmode`, `sslrootcert`, `instanceName`, `authentication`, `domain` — may be set alongside a `dsn` and are applied when the DSN omits them.
+
+  If such a field is set to a value that **contradicts** the DSN (e.g. `dsn = "...?sslmode=disable"` together with `sslmode = "require"`, or a `host`/`user`/`database` that differs from the DSN), DBHub rejects the configuration at startup rather than silently ignoring the field. Set each value in only one place, or make the two values match.
+  </Note>
 </ParamField>
 
 ### connection_timeout
@@ -283,18 +289,60 @@ Sources define database connections. Each source represents a database that DBHu
   **Options:**
   - `disable` - No SSL/TLS encryption. Data is transmitted in plaintext.
   - `require` - SSL/TLS encryption enabled, but server certificate is not verified.
+  - `verify-ca` - SSL with CA certificate verification (no hostname check). **PostgreSQL only.**
+  - `verify-full` - SSL with CA certificate and hostname verification. **PostgreSQL only.**
 
-  Supported databases: PostgreSQL, MySQL, MariaDB, SQL Server (not applicable to SQLite).
+  Supported databases: PostgreSQL, MySQL, MariaDB, SQL Server (not applicable to SQLite). The `verify-ca` and `verify-full` modes are only supported for PostgreSQL.
 
   ```toml
+  # Basic SSL (all network databases)
   [[sources]]
   id = "production"
   dsn = "postgres://user:pass@localhost:5432/mydb"
   sslmode = "require"
+
+  # Certificate verification (PostgreSQL only)
+  [[sources]]
+  id = "rds_postgres"
+  type = "postgres"
+  host = "mydb.abc123.eu-west-1.rds.amazonaws.com"
+  port = 5432
+  database = "myapp"
+  user = "app_user"
+  password = "secure_password"
+  sslmode = "verify-ca"
+  sslrootcert = "~/.ssl/rds-combined-ca-bundle.pem"
   ```
 
   <Tip>
-  Can also be set via DSN query parameter: `?sslmode=require`
+  Can also be set via DSN query parameter: `?sslmode=require` or `?sslmode=verify-ca&sslrootcert=/path/to/ca.pem`
+  </Tip>
+</ParamField>
+
+### sslrootcert
+
+<ParamField path="sslrootcert" type="string">
+  Path to the CA certificate file for SSL certificate verification. Required when using `sslmode=verify-ca` or `sslmode=verify-full`.
+
+  Supports `~/` path expansion.
+
+  **PostgreSQL only.**
+
+  ```toml
+  [[sources]]
+  id = "rds_postgres"
+  type = "postgres"
+  host = "mydb.abc123.eu-west-1.rds.amazonaws.com"
+  port = 5432
+  database = "myapp"
+  user = "app_user"
+  password = "secure_password"
+  sslmode = "verify-full"
+  sslrootcert = "~/.ssl/rds-combined-ca-bundle.pem"
+  ```
+
+  <Tip>
+  Can also be set via DSN query parameter: `?sslmode=verify-full&sslrootcert=/path/to/ca.pem`
   </Tip>
 </ParamField>
 
@@ -368,6 +416,27 @@ Sources define database connections. Each source represents a database that DBHu
   ```
 
   Without `search_path`, DBHub defaults to the `public` schema for all schema discovery operations.
+
+  <Note>
+  This option is **only available via TOML**. It is not supported as a DSN query parameter.
+  </Note>
+</ParamField>
+
+### timezone
+
+<ParamField path="timezone" type="string">
+  Controls how the driver interprets `DATETIME` values. Accepts `"Z"` (UTC), `"local"`, or an offset such as `"+09:00"`.
+
+  **MySQL / MariaDB only.**
+
+  ```toml
+  [[sources]]
+  id = "production"
+  dsn = "mysql://user:pass@localhost:3306/mydb"
+  timezone = "+09:00"
+  ```
+
+  Passed through to the underlying driver's `timezone` connection option. `DATETIME` is timezone-naive, so the driver needs to know which timezone the stored values represent in order to build the correct `Date`. When unset, the driver defaults to `"local"` (the host's timezone), which yields an incorrect instant whenever the host timezone differs from the data's. Set this to the timezone the `DATETIME` values are stored in (e.g. `"+09:00"`) so they are converted to the correct UTC instant.
 
   <Note>
   This option is **only available via TOML**. It is not supported as a DSN query parameter.
@@ -667,11 +736,13 @@ default = 10
 | `lazy` | boolean | ❌ | Defer connection until first query (default: `false`) |
 | `connection_timeout` | number | ❌ | Connection timeout (seconds) |
 | `query_timeout` | number | ❌ | Query timeout (seconds) |
-| `sslmode` | string | ❌ | SSL mode: `disable`, `require` |
+| `sslmode` | string | ❌ | SSL mode: `disable`, `require`, `verify-ca`, `verify-full` |
+| `sslrootcert` | string | ❌ | CA certificate path (PostgreSQL only, requires `verify-ca` or `verify-full`) |
 | `instanceName` | string | ❌ | SQL Server named instance |
 | `authentication` | string | ❌ | SQL Server auth method |
 | `domain` | string | ❌ | Windows domain (NTLM) |
 | `search_path` | string | ❌ | PostgreSQL schema search path (comma-separated) |
+| `timezone` | string | ❌ | MySQL/MariaDB: `Z`, `local`, or offset like `+09:00` |
 | `ssh_host` | string | ❌ | SSH server hostname |
 | `ssh_port` | number | ❌ | SSH server port (default: 22) |
 | `ssh_user` | string | ❌ | SSH username |

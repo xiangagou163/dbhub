@@ -337,6 +337,127 @@ export function resolvePort(): { port: number; source: string } {
 }
 
 /**
+ * Resolve a string-valued flag (e.g. `--host`) that must carry a real value,
+ * rejecting every value-less form with a single friendly error and exit(1).
+ *
+ * This works around a limitation of parseCommandLineArgs(): it collapses a bare
+ * `--flag`, an empty `--flag=`, and an explicit `--flag=true` all into the
+ * sentinel string "true", and can even bind a following positional to `--flag=`.
+ * To distinguish a genuine value-less flag from `--flag=true`, we inspect argv
+ * directly. Reuse this for any future flag that needs the same treatment rather
+ * than re-implementing the scan.
+ *
+ * Returns the trimmed value, or undefined if the flag is absent.
+ */
+function requireFlagValue(
+  flag: string,
+  args: Record<string, string>,
+  example: string
+): string | undefined {
+  const fail = (): never => {
+    console.error(`ERROR: --${flag} requires a value (e.g., --${flag}=${example}).`);
+    process.exit(1);
+  };
+
+  // Scan the entire argv (no early break) so a later bare/duplicate `--flag`
+  // does not slip past an earlier valid occurrence.
+  const rawArgs = process.argv.slice(2);
+  for (let i = 0; i < rawArgs.length; i++) {
+    const token = rawArgs[i];
+
+    if (token === `--${flag}`) {
+      // Bare flag, followed by nothing or another --flag → no value.
+      const next = rawArgs[i + 1];
+      if (!next || next.startsWith("--")) fail();
+    } else if (token === `--${flag}=`) {
+      // Empty after equals is always an error, even if a positional follows:
+      // the space makes intent ambiguous and the positional would otherwise be
+      // silently bound as the value.
+      fail();
+    }
+  }
+
+  // parseCommandLineArgs() holds the resolved value (an explicit `--flag=true`
+  // passes through and fails later at the consumer, e.g. listen()). Trim so a
+  // whitespace-only value (e.g. from `--flag="   "`) gets the same friendly
+  // error rather than an opaque downstream failure.
+  if (args[flag] === undefined) return undefined;
+  const value = args[flag].trim();
+  if (!value) fail();
+  return value;
+}
+
+/**
+ * Resolve HTTP bind host from command line args or environment variables.
+ * Returns the host with "0.0.0.0" as the default (listen on all interfaces).
+ *
+ * Note: Only applicable when using --transport=http. Default "0.0.0.0" keeps
+ * backward compatibility; production deployments should set "127.0.0.1" and
+ * front DBHub with a reverse proxy or firewall.
+ */
+export function resolveHost(): { host: string; source: string } {
+  const args = parseCommandLineArgs();
+
+  // 1. Command line argument has highest priority.
+  const cliHost = requireFlagValue("host", args, "127.0.0.1");
+  if (cliHost !== undefined) {
+    return { host: cliHost, source: "command line argument" };
+  }
+
+  // 2. Environment variable (trimmed; empty or whitespace-only is unset)
+  //    Using DBHUB_HOST rather than generic HOST to avoid collisions — HOST is
+  //    set by default in csh/tcsh, some CI systems, and Docker base images
+  //    (often to the machine hostname), which would silently redirect binds.
+  //    Trimming matches the --host flag's validation so `DBHUB_HOST="   "`
+  //    doesn't get handed to listen() and fail with an obscure bind error.
+  const envHost = process.env.DBHUB_HOST?.trim();
+  if (envHost) {
+    return { host: envHost, source: "environment variable" };
+  }
+
+  // 3. Default: bind all interfaces
+  return { host: "0.0.0.0", source: "default" };
+}
+
+/**
+ * Resolve the list of additional hostnames the HTTP transport accepts in the
+ * `Host`/`Origin` headers (DNS-rebinding allow-list). Loopback hosts and the
+ * concrete bind host are always allowed by buildAllowedHosts(); this returns
+ * only the operator-supplied extras.
+ *
+ * Sources (highest priority first):
+ *   1. --allowed-hosts=host1,host2
+ *   2. DBHUB_ALLOWED_HOSTS=host1,host2 environment variable
+ *
+ * Use a single "*" to disable Host validation (only when DBHub is fronted by
+ * your own authentication/proxy). Entries may include a port, which is ignored
+ * (only the hostname is matched). IPv6 literals must be bracketed, e.g. [::1].
+ */
+export function resolveAllowedHosts(): { hosts: string[]; source: string } {
+  const args = parseCommandLineArgs();
+
+  const cliValue = requireFlagValue("allowed-hosts", args, "db.internal,app.example.com");
+  if (cliValue !== undefined) {
+    return { hosts: splitHostList(cliValue), source: "command line argument" };
+  }
+
+  const envValue = process.env.DBHUB_ALLOWED_HOSTS?.trim();
+  if (envValue) {
+    return { hosts: splitHostList(envValue), source: "environment variable" };
+  }
+
+  return { hosts: [], source: "default" };
+}
+
+/** Split a comma-separated host list, trimming and dropping empty entries. */
+function splitHostList(value: string): string[] {
+  return value
+    .split(",")
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0);
+}
+
+/**
  * Redact sensitive information from a DSN string
  * Replaces the password with asterisks
  * @param dsn - The DSN string to redact

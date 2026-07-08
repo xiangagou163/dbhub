@@ -116,29 +116,57 @@ dsn = "sqlite:///path/to/database.db"
       expect(result?.sources[0].user).toBeUndefined();
     });
 
-    it('should not override explicit connection params with DSN values', () => {
+    it('should reject identity fields that conflict with the DSN', () => {
+      // A DSN already encodes the connection identity; setting a field to a
+      // different value is silently ignored at connection time, so it must error.
       const tomlContent = `
 [[sources]]
 id = "explicit_override"
 dsn = "postgres://dsn_user:pass@dsn_host:5432/dsn_db"
 type = "postgres"
 host = "explicit_host"
-port = 9999
-database = "explicit_db"
-user = "explicit_user"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      expect(() => loadTomlConfig()).toThrow("conflicting host");
+    });
+
+    it('should accept a host field that differs only in case from the DSN', () => {
+      const tomlContent = `
+[[sources]]
+id = "case_host"
+dsn = "postgres://user:pass@DB.EXAMPLE.COM:5432/db"
+host = "db.example.com"
 `;
       fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
 
       const result = loadTomlConfig();
 
-      // Explicit values should be preserved, not overwritten by DSN
+      expect(result?.sources[0].id).toBe('case_host');
+    });
+
+    it('should accept identity fields that match the DSN', () => {
+      const tomlContent = `
+[[sources]]
+id = "redundant"
+dsn = "postgres://dsn_user:pass@dsn_host:5432/dsn_db"
+type = "postgres"
+host = "dsn_host"
+port = 5432
+database = "dsn_db"
+user = "dsn_user"
+`;
+      fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+      const result = loadTomlConfig();
+
       expect(result?.sources[0]).toMatchObject({
-        id: 'explicit_override',
+        id: 'redundant',
         type: 'postgres',
-        host: 'explicit_host',
-        port: 9999,
-        database: 'explicit_db',
-        user: 'explicit_user',
+        host: 'dsn_host',
+        port: 5432,
+        database: 'dsn_db',
+        user: 'dsn_user',
       });
     });
 
@@ -483,6 +511,145 @@ sslmode = "invalid"
         expect(() => loadTomlConfig()).toThrow("invalid sslmode 'invalid'");
       });
 
+      it('should throw error when DSN sslmode conflicts with sslmode field', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/db?sslmode=disable"
+sslmode = "require"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting sslmode");
+      });
+
+      it('should accept matching DSN sslmode and sslmode field', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/db?sslmode=require"
+sslmode = "require"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].sslmode).toBe('require');
+      });
+
+      it('should populate sslmode field from DSN query parameter', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/db?sslmode=require"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result?.sources[0].sslmode).toBe('require');
+      });
+
+      it('should treat an empty DSN sslmode (?sslmode=) as present and conflicting', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/db?sslmode="
+sslmode = "require"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting sslmode");
+      });
+
+      it('should throw error when DSN user conflicts with user field', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://dsn_user:pass@localhost:5432/db"
+user = "other_user"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting user");
+      });
+
+      it('should throw error when DSN database conflicts with database field', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/dsn_db"
+database = "other_db"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting database");
+      });
+
+      it('should throw error when password field conflicts with DSN password', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:dsn_pass@localhost:5432/db"
+password = "other_pass"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("password' field that conflicts");
+        // The error must not echo either password value
+        expect(() => loadTomlConfig()).not.toThrow(/dsn_pass|other_pass/);
+      });
+
+      it('should report a clear error when password field is set but DSN has no password', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user@localhost:5432/db"
+password = "field_pass"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("the DSN has no password");
+        expect(() => loadTomlConfig()).not.toThrow(/field_pass/);
+      });
+
+      it('should throw error when type = "sqlite" conflicts with a non-SQLite DSN', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "sqlite"
+dsn = "postgres://user:pass@localhost:5432/db"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting type");
+      });
+
+      it('should throw error when type = "postgres" conflicts with a SQLite DSN', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+dsn = "sqlite:///path/to/db.sqlite"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting type");
+      });
+
+      it('should throw error when DSN instanceName conflicts with instanceName field', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "sqlserver://sa:pass@localhost:1433/db?instanceName=ENV1"
+instanceName = "ENV2"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("conflicting instanceName");
+      });
+
       it('should throw error when sslmode is specified for SQLite', () => {
         const tomlContent = `
 [[sources]]
@@ -508,6 +675,172 @@ dsn = "postgres://user:pass@localhost:5432/testdb"
 
         expect(result).toBeTruthy();
         expect(result?.sources[0].sslmode).toBeUndefined();
+      });
+
+      it('should accept sslmode = "verify-ca" for PostgreSQL', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-ca"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].sslmode).toBe('verify-ca');
+      });
+
+      it('should accept sslmode = "verify-full" for PostgreSQL', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-full"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].sslmode).toBe('verify-full');
+      });
+
+      it('should reject sslmode = "verify-ca" for MySQL', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "mysql"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-ca"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("sslmode 'verify-ca' which is only supported for PostgreSQL");
+      });
+
+      it('should reject sslmode = "verify-full" for MariaDB', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "mariadb"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-full"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("sslmode 'verify-full' which is only supported for PostgreSQL");
+      });
+
+      it('should reject sslmode = "verify-ca" for SQL Server', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "sqlserver"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-ca"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("sslmode 'verify-ca' which is only supported for PostgreSQL");
+      });
+
+      it('should reject sslrootcert when sslmode is "require"', () => {
+        const certPath = path.join(tempDir, 'ca.pem');
+        fs.writeFileSync(certPath, 'cert-content');
+
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "require"
+sslrootcert = '${certPath}'
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("sslrootcert requires sslmode 'verify-ca' or 'verify-full'");
+      });
+
+      it('should reject sslrootcert when sslmode is not set', () => {
+        const certPath = path.join(tempDir, 'ca.pem');
+        fs.writeFileSync(certPath, 'cert-content');
+
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslrootcert = '${certPath}'
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("sslrootcert requires sslmode 'verify-ca' or 'verify-full'");
+      });
+
+      it('should accept sslrootcert with sslmode = "verify-ca" when file exists', () => {
+        const certPath = path.join(tempDir, 'ca.pem');
+        fs.writeFileSync(certPath, 'cert-content');
+
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-ca"
+sslrootcert = '${certPath}'
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].sslmode).toBe('verify-ca');
+        expect(result?.sources[0].sslrootcert).toBe(certPath);
+      });
+
+      it('should reject sslrootcert when file does not exist', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+type = "postgres"
+host = "localhost"
+database = "testdb"
+user = "user"
+password = "pass"
+sslmode = "verify-ca"
+sslrootcert = "/nonexistent/ca.pem"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow("sslrootcert file not found or not accessible: '/nonexistent/ca.pem'");
       });
     });
 
@@ -869,6 +1202,91 @@ dsn = "postgres://user:pass@localhost:5432/testdb"
         expect(result?.sources[0].search_path).toBeUndefined();
       });
     });
+
+    describe('timezone validation', () => {
+      it('should accept timezone for MySQL source', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "mysql://user:pass@localhost:3306/testdb"
+timezone = "+09:00"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].timezone).toBe('+09:00');
+      });
+
+      it('should accept "Z" timezone for MariaDB source', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "mariadb://user:pass@localhost:3306/testdb"
+timezone = "Z"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].timezone).toBe('Z');
+      });
+
+      it('should throw error when timezone is used with non-MySQL/MariaDB source', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "postgres://user:pass@localhost:5432/testdb"
+timezone = "+09:00"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('only supported for MySQL and MariaDB');
+      });
+
+      it('should throw error for invalid timezone format', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "mysql://user:pass@localhost:3306/testdb"
+timezone = "Asia/Seoul"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('invalid timezone');
+      });
+
+      it('should throw error for non-string timezone (TOML array)', () => {
+        // ["local"] coerces to the string "local" via RegExp.test(), so the
+        // typeof guard is required to reject it before it reaches the driver.
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "mysql://user:pass@localhost:3306/testdb"
+timezone = ["local"]
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        expect(() => loadTomlConfig()).toThrow('invalid timezone');
+      });
+
+      it('should work without timezone (optional field)', () => {
+        const tomlContent = `
+[[sources]]
+id = "test_db"
+dsn = "mysql://user:pass@localhost:3306/testdb"
+`;
+        fs.writeFileSync(path.join(tempDir, 'dbhub.toml'), tomlContent);
+
+        const result = loadTomlConfig();
+
+        expect(result).toBeTruthy();
+        expect(result?.sources[0].timezone).toBeUndefined();
+      });
+    });
+
   });
 
   describe('buildDSNFromSource', () => {
@@ -881,6 +1299,143 @@ dsn = "postgres://user:pass@localhost:5432/testdb"
       const dsn = buildDSNFromSource(source);
 
       expect(dsn).toBe('postgres://user:pass@localhost:5432/db');
+    });
+
+    it('should merge sslmode field into a DSN that lacks it', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        dsn: 'postgres://user:pass@localhost:5432/db',
+        sslmode: 'require',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@localhost:5432/db?sslmode=require');
+    });
+
+    it('should append sslmode with & when DSN already has query params', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'sqlserver',
+        dsn: 'sqlserver://user:pass@localhost:1433/db?instanceName=ENV1',
+        sslmode: 'require',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('sqlserver://user:pass@localhost:1433/db?instanceName=ENV1&sslmode=require');
+    });
+
+    it('should not duplicate sslmode when DSN already specifies it', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        dsn: 'postgres://user:pass@localhost:5432/db?sslmode=require',
+        sslmode: 'require',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@localhost:5432/db?sslmode=require');
+    });
+
+    it('should merge instanceName field into a SQL Server DSN that lacks it', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'sqlserver',
+        dsn: 'sqlserver://sa:pass@localhost:1433/db',
+        instanceName: 'ENV1',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('sqlserver://sa:pass@localhost:1433/db?instanceName=ENV1');
+    });
+
+    it('should merge authentication and domain fields into a SQL Server DSN', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'sqlserver',
+        dsn: 'sqlserver://user:pass@localhost:1433/db',
+        authentication: 'ntlm',
+        domain: 'CORP',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('sqlserver://user:pass@localhost:1433/db?authentication=ntlm&domain=CORP');
+    });
+
+    it('should merge sslrootcert field into a postgres DSN for verify-ca', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        dsn: 'postgres://user:pass@localhost:5432/db',
+        sslmode: 'verify-ca',
+        sslrootcert: '/etc/ssl/ca bundle.pem',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe(
+        'postgres://user:pass@localhost:5432/db?sslmode=verify-ca&sslrootcert=' +
+          encodeURIComponent('/etc/ssl/ca bundle.pem')
+      );
+    });
+
+    it('should not merge sslrootcert when sslmode is not a verify mode', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        dsn: 'postgres://user:pass@localhost:5432/db',
+        sslmode: 'require',
+        sslrootcert: '/etc/ssl/ca.pem',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@localhost:5432/db?sslmode=require');
+    });
+
+    it('should not append a duplicate when the DSN has an empty-valued param', () => {
+      // SafeURL drops `?sslmode=`, but the raw presence check must still see it
+      // so we never produce an ambiguous `?sslmode=&sslmode=require`.
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        dsn: 'postgres://user:pass@localhost:5432/db?sslmode=',
+        sslmode: 'require',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@localhost:5432/db?sslmode=');
+    });
+
+    it('should not produce "?&" when the DSN ends with a bare "?"', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'postgres',
+        dsn: 'postgres://user:pass@localhost:5432/db?',
+        sslmode: 'require',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@localhost:5432/db?sslmode=require');
+    });
+
+    it('should not add sslmode to a SQLite DSN', () => {
+      const source: SourceConfig = {
+        id: 'test',
+        type: 'sqlite',
+        dsn: 'sqlite:///path/to/db.sqlite',
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('sqlite:///path/to/db.sqlite');
     });
 
     it('should build PostgreSQL DSN from individual params', () => {
@@ -976,6 +1531,41 @@ dsn = "postgres://user:pass@localhost:5432/testdb"
       const dsn = buildDSNFromSource(source);
 
       expect(dsn).toBe('postgres://user:pass@localhost:5432/testdb?sslmode=require');
+    });
+
+    it('should build PostgreSQL DSN with verify-ca and sslrootcert', () => {
+      const source: SourceConfig = {
+        id: 'pg_verify',
+        type: 'postgres',
+        host: 'rds.amazonaws.com',
+        port: 5432,
+        database: 'testdb',
+        user: 'user',
+        password: 'pass',
+        sslmode: 'verify-ca',
+        sslrootcert: '/path/to/ca-bundle.pem'
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@rds.amazonaws.com:5432/testdb?sslmode=verify-ca&sslrootcert=%2Fpath%2Fto%2Fca-bundle.pem');
+    });
+
+    it('should build PostgreSQL DSN with verify-full without sslrootcert', () => {
+      const source: SourceConfig = {
+        id: 'pg_verify_full',
+        type: 'postgres',
+        host: 'localhost',
+        port: 5432,
+        database: 'testdb',
+        user: 'user',
+        password: 'pass',
+        sslmode: 'verify-full'
+      };
+
+      const dsn = buildDSNFromSource(source);
+
+      expect(dsn).toBe('postgres://user:pass@localhost:5432/testdb?sslmode=verify-full');
     });
 
     it('should build MySQL DSN with sslmode', () => {

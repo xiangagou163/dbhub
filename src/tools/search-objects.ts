@@ -6,12 +6,13 @@ import { quoteQualifiedIdentifier } from "../utils/identifier-quoter.js";
 import {
   getEffectiveSourceId,
   trackToolRequest,
+  tryClassifyConnectionError,
 } from "../utils/tool-handler-helpers.js";
 
 /**
  * Object types that can be searched
  */
-export type DatabaseObjectType = "schema" | "table" | "column" | "procedure" | "function" | "index";
+export type DatabaseObjectType = "schema" | "table" | "view" | "column" | "procedure" | "function" | "index";
 
 /**
  * Detail level for search results
@@ -24,13 +25,13 @@ export type DetailLevel = "names" | "summary" | "full";
 // Schema for search_objects tool (unified search and list)
 export const searchDatabaseObjectsSchema = {
   object_type: z
-    .enum(["schema", "table", "column", "procedure", "function", "index"])
+    .enum(["schema", "table", "view", "column", "procedure", "function", "index"])
     .describe("Object type to search"),
   pattern: z
     .string()
     .optional()
     .default("%")
-    .describe("LIKE pattern (% = any chars, _ = one char). Default: %"),
+    .describe("LIKE pattern (% = any chars, _ = one char)"),
   schema: z
     .string()
     .optional()
@@ -49,7 +50,7 @@ export const searchDatabaseObjectsSchema = {
     .positive()
     .max(1000)
     .default(100)
-    .describe("Max results (default: 100, max: 1000)"),
+    .describe("Max results"),
 };
 
 /**
@@ -64,6 +65,26 @@ function likePatternToRegex(pattern: string): RegExp {
     .replace(/_/g, ".");
 
   return new RegExp(`^${escaped}$`, "i");
+}
+
+/**
+ * Resolve the set of schemas a search should scope to when the caller did not
+ * pass an explicit `schema` filter.
+ *
+ * Prefers the connector's default schema (e.g. the database named in a
+ * MySQL/MariaDB DSN) so searches don't leak across every database on the
+ * server. When the connector reports no default (null) — or doesn't implement
+ * getDefaultSchema at all — it falls back to the full getSchemas() list, which
+ * for PostgreSQL/SQL Server/SQLite is already scoped to the connected database.
+ */
+async function resolveDefaultSchemas(connector: Connector): Promise<string[]> {
+  if (connector.getDefaultSchema) {
+    const defaultSchema = await connector.getDefaultSchema();
+    if (defaultSchema) {
+      return [defaultSchema];
+    }
+  }
+  return connector.getSchemas();
 }
 
 /**
@@ -123,7 +144,7 @@ async function searchSchemas(
   detailLevel: DetailLevel,
   limit: number
 ): Promise<any[]> {
-  const schemas = await connector.getSchemas();
+  const schemas = await resolveDefaultSchemas(connector);
   const regex = likePatternToRegex(pattern);
   const matched = schemas.filter((schema: string) => regex.test(schema)).slice(0, limit);
 
@@ -170,7 +191,7 @@ async function searchTables(
   if (schemaFilter) {
     schemasToSearch = [schemaFilter];
   } else {
-    schemasToSearch = await connector.getSchemas();
+    schemasToSearch = await resolveDefaultSchemas(connector);
   }
 
   // Search tables in each schema
@@ -258,6 +279,104 @@ async function searchTables(
 }
 
 /**
+ * Search for views
+ */
+async function searchViews(
+  connector: Connector,
+  pattern: string,
+  schemaFilter: string | undefined,
+  detailLevel: DetailLevel,
+  limit: number
+): Promise<any[]> {
+  const regex = likePatternToRegex(pattern);
+  const results: any[] = [];
+
+  // Get schemas to search
+  let schemasToSearch: string[];
+  if (schemaFilter) {
+    schemasToSearch = [schemaFilter];
+  } else {
+    schemasToSearch = await connector.getSchemas();
+  }
+
+  // Search views in each schema
+  for (const schemaName of schemasToSearch) {
+    if (results.length >= limit) break;
+
+    try {
+      const views = await connector.getViews(schemaName);
+      const matched = views.filter((view: string) => regex.test(view));
+
+      for (const viewName of matched) {
+        if (results.length >= limit) break;
+
+        if (detailLevel === "names") {
+          results.push({
+            name: viewName,
+            schema: schemaName,
+          });
+        } else if (detailLevel === "summary") {
+          // Get column count for summary
+          try {
+            const columns = await connector.getTableSchema(viewName, schemaName);
+            const comment = await getTableComment(connector, viewName, schemaName);
+
+            results.push({
+              name: viewName,
+              schema: schemaName,
+              column_count: columns.length,
+              ...(comment ? { comment } : {}),
+            });
+          } catch (error) {
+            results.push({
+              name: viewName,
+              schema: schemaName,
+              column_count: null,
+            });
+          }
+        } else {
+          // full detail
+          // Note: indexes are intentionally not queried for views. Non-materialized
+          // views generally don't expose meaningful indexes, and on some engines
+          // getTableIndexes() throws for a view, which would otherwise discard the
+          // columns/comment already fetched and degrade the whole result to an error.
+          try {
+            const columns = await connector.getTableSchema(viewName, schemaName);
+            const comment = await getTableComment(connector, viewName, schemaName);
+
+            results.push({
+              name: viewName,
+              schema: schemaName,
+              column_count: columns.length,
+              ...(comment ? { comment } : {}),
+              columns: columns.map((col: any) => ({
+                name: col.column_name,
+                type: col.data_type,
+                nullable: col.is_nullable === "YES",
+                default: col.column_default,
+                ...(col.description ? { description: col.description } : {}),
+              })),
+              indexes: [],
+            });
+          } catch (error) {
+            results.push({
+              name: viewName,
+              schema: schemaName,
+              error: `Unable to fetch full details: ${(error as Error).message}`,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      // Skip schemas we can't access
+      continue;
+    }
+  }
+
+  return results;
+}
+
+/**
  * Search for columns
  */
 async function searchColumns(
@@ -276,22 +395,29 @@ async function searchColumns(
   if (schemaFilter) {
     schemasToSearch = [schemaFilter];
   } else {
-    schemasToSearch = await connector.getSchemas();
+    schemasToSearch = await resolveDefaultSchemas(connector);
   }
 
-  // Search columns in tables across schemas
+  // Search columns in tables and views across schemas
   for (const schemaName of schemasToSearch) {
     if (results.length >= limit) break;
 
     try {
-      // Get tables to search
+      // Get tables (and views) to search
       let tablesToSearch: string[];
       if (tableFilter) {
-        // If table filter is specified, only search that table
+        // If table filter is specified, only search that table/view
         tablesToSearch = [tableFilter];
       } else {
-        // Otherwise search all tables in the schema
-        tablesToSearch = await connector.getTables(schemaName);
+        // Otherwise search all tables AND views in the schema. Views are queryable
+        // objects with columns, so column discovery should cover them too. The two
+        // lookups are independent, so run them concurrently; getViews() may be
+        // unsupported for some connectors/schemas, so degrade to no views.
+        const [tables, views] = await Promise.all([
+          connector.getTables(schemaName),
+          Promise.resolve(connector.getViews(schemaName)).catch(() => [] as string[]),
+        ]);
+        tablesToSearch = [...tables, ...(views ?? [])];
       }
 
       for (const tableName of tablesToSearch) {
@@ -358,7 +484,7 @@ async function searchProcedures(
   if (schemaFilter) {
     schemasToSearch = [schemaFilter];
   } else {
-    schemasToSearch = await connector.getSchemas();
+    schemasToSearch = await resolveDefaultSchemas(connector);
   }
 
   // Search procedures/functions in each schema
@@ -427,7 +553,7 @@ async function searchIndexes(
   if (schemaFilter) {
     schemasToSearch = [schemaFilter];
   } else {
-    schemasToSearch = await connector.getSchemas();
+    schemasToSearch = await resolveDefaultSchemas(connector);
   }
 
   // Search indexes in tables across schemas
@@ -555,6 +681,9 @@ export function createSearchDatabaseObjectsToolHandler(sourceId?: string) {
         case "table":
           results = await searchTables(connector, pattern, schema, detail_level, limit);
           break;
+        case "view":
+          results = await searchViews(connector, pattern, schema, detail_level, limit);
+          break;
         case "column":
           results = await searchColumns(connector, pattern, schema, table, detail_level, limit);
           break;
@@ -586,6 +715,8 @@ export function createSearchDatabaseObjectsToolHandler(sourceId?: string) {
     } catch (error) {
       success = false;
       errorMessage = (error as Error).message;
+      const classified = tryClassifyConnectionError(error, sourceId, effectiveSourceId);
+      if (classified) return classified;
       return createToolErrorResponse(
         `Error searching database objects: ${errorMessage}`,
         "SEARCH_ERROR"

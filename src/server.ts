@@ -2,19 +2,21 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import express from "express";
+import http from "http";
 import path from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 
 import { ConnectorManager } from "./connectors/manager.js";
 import { ConnectorRegistry } from "./connectors/interface.js";
-import { resolveTransport, resolvePort, resolveSourceConfigs, isDemoMode } from "./config/env.js";
+import { resolveTransport, resolvePort, resolveHost, resolveAllowedHosts, resolveSourceConfigs, isDemoMode } from "./config/env.js";
 import { registerTools } from "./tools/index.js";
 import { listSources, getSource } from "./api/sources.js";
 import { listRequests } from "./api/requests.js";
 import { generateStartupTable, buildSourceDisplayInfo } from "./utils/startup-table.js";
 import { getToolsForSource } from "./utils/tool-metadata.js";
 import { startConfigWatcher } from "./utils/config-watcher.js";
+import { validateOrigin, buildAllowedHosts, getSelfHosts, ALLOW_ANY_HOST } from "./utils/cross-origin.js";
 
 // Create __dirname equivalent for ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -129,8 +131,18 @@ See documentation for more details on configuring database connections.
     // Resolve transport type (for MCP server)
     const transportData = resolveTransport();
 
-    // Resolve port for HTTP server (only needed for http transport)
+    // Resolve port and host for HTTP server (only needed for http transport)
     const port = transportData.type === "http" ? resolvePort().port : null;
+    const host = transportData.type === "http" ? resolveHost().host : null;
+
+    // DNS-rebinding allow-list for the HTTP transport: loopback is always
+    // permitted; a wildcard bind also auto-allows this machine's hostname/IPs so
+    // network clients work without extra config, and operators add any other
+    // served hostnames via --allowed-hosts / DBHUB_ALLOWED_HOSTS ("*" disables).
+    const allowedHosts =
+      transportData.type === "http"
+        ? buildAllowedHosts(resolveAllowedHosts().hosts, host ?? undefined, getSelfHosts())
+        : new Set<string>();
 
     // Print ASCII art banner with version and slogan
     // Collect active modes
@@ -169,38 +181,20 @@ See documentation for more details on configuring database connections.
       // Enable JSON parsing
       app.use(express.json());
 
-      // DNS rebinding protection: reject cross-origin requests where the
-      // Origin hostname doesn't match the Host hostname.  Browser-based
-      // attacks (the DNS rebinding threat model) always send an Origin
-      // header on cross-origin fetches.  Non-browser MCP clients don't
-      // send Origin at all and are unaffected.
+      // DNS-rebinding guard: validate the Host header against an explicit
+      // allow-list (loopback + the bind host + any --allowed-hosts) on every
+      // request, and validate Origin when present. A rebound attacker hostname
+      // is not on the list and is rejected even though Origin and Host agree —
+      // closing GHSA-fm8p-53ww-hf6w / GHSA-fp99-xwp4-hv8q / GHSA-qvg2-3c48-77mx.
+      // Non-browser MCP clients targeting an allowed host are unaffected.
       app.use((req, res, next) => {
         const origin = req.headers.origin;
-        const host = req.headers.host ?? "";
-        const allowedOrigins = (process.env.DBHUB_ALLOWED_ORIGINS ?? "")
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean);
-
-        const isLocalOrigin = (value: string) =>
-          value.startsWith("http://localhost") ||
-          value.startsWith("https://localhost") ||
-          value.startsWith("http://127.0.0.1") ||
-          value.startsWith("https://127.0.0.1");
-
-        const isSameHostOrigin = (value: string) => {
-          try {
-            return new URL(value).host === host;
-          } catch {
-            return false;
-          }
-        };
-
-        const isAllowedOrigin = (value: string) =>
-          isLocalOrigin(value) || isSameHostOrigin(value) || allowedOrigins.includes(value);
-
-        if (origin && !isAllowedOrigin(origin)) {
-          return res.status(403).json({ error: "Forbidden origin" });
+        const result = validateOrigin(origin, req.headers.host, allowedHosts);
+        if (!result.ok) {
+          return res.status(result.status).json({
+            error: result.status === 400 ? 'Bad Request' : 'Forbidden',
+            message: result.message,
+          });
         }
 
         res.header("Access-Control-Allow-Origin", origin || "http://localhost");
@@ -267,18 +261,48 @@ See documentation for more details on configuring database connections.
         });
       }
 
-      // Start the HTTP server
-      app.listen(port, '0.0.0.0', () => {
-        // In development mode, suggest using the Vite dev server for hot reloading
+      // Start the HTTP server. Create explicitly so the `error` listener is
+      // attached before listen() — otherwise synchronous bind failures
+      // (EADDRINUSE, EACCES on privileged ports) can fire before the listener
+      // is registered. Matches the pattern used in utils/ssh-tunnel.ts.
+      const httpServer = http.createServer(app);
+
+      httpServer.on('error', (err) => {
+        const displayHost = host!.includes(':') ? `[${host!}]` : host!;
+        console.error(`Failed to bind HTTP server to ${displayHost}:${port}: ${err.message}`);
+        process.exit(1);
+      });
+
+      httpServer.listen(port!, host!, () => {
+        const address = httpServer.address();
+        const boundHost = typeof address === 'object' && address ? address.address : host!;
+        const boundPort = typeof address === 'object' && address ? address.port : port!;
+        const displayHost = boundHost.includes(':') ? `[${boundHost}]` : boundHost;
+        // Wildcard binds (0.0.0.0 / ::) are not routable; use localhost for user URLs.
+        const userHost = (boundHost === '0.0.0.0' || boundHost === '::') ? 'localhost' : displayHost;
+
+        console.error(`HTTP server listening on ${displayHost}:${boundPort}`);
+
+        // Surface the DNS-rebinding allow-list so operators know which Host
+        // values are accepted (and how to widen it for network deployments).
+        if (allowedHosts.has(ALLOW_ANY_HOST)) {
+          console.error('Allowed hosts: * (DNS-rebinding protection DISABLED — ensure DBHub is fronted by your own auth/proxy)');
+        } else {
+          console.error(`Allowed hosts: ${[...allowedHosts].join(', ')} (set --allowed-hosts to serve other hostnames)`);
+        }
+
+        // In development mode, suggest using the Vite dev server for hot reloading.
+        // Vite serves from localhost; use the same hostname for the backend hint so
+        // cross-origin calls from Vite satisfy the DNS-rebinding middleware check.
         if (process.env.NODE_ENV === 'development') {
           console.error('Development mode detected!');
           console.error('   Workbench dev server (with HMR): http://localhost:5173');
-          console.error('   Backend API: http://localhost:8080');
+          console.error(`   Backend API: http://localhost:${boundPort}`);
           console.error('');
         } else {
-          console.error(`Workbench at http://localhost:${port}/`);
+          console.error(`Workbench at http://${userHost}:${boundPort}/`);
         }
-        console.error(`MCP server endpoint at http://localhost:${port}/mcp`);
+        console.error(`MCP server endpoint at http://${userHost}:${boundPort}/mcp`);
       });
     } else {
       // STDIO transport: Pure MCP-over-stdio, no HTTP server

@@ -264,6 +264,81 @@ describe('SQL Server Connector Integration Tests', () => {
   });
 
   describe('SQL Server-specific Features', () => {
+    it('should return an execution plan for EXPLAIN <query> (SHOWPLAN_XML)', async () => {
+      const result = await sqlServerTest.connector.executeSQL(
+        'EXPLAIN SELECT * FROM users WHERE age > 30',
+        {}
+      );
+
+      expect(result.rows).toHaveLength(1);
+      const planXml = result.rows[0].plan as string;
+      expect(typeof planXml).toBe('string');
+      // SHOWPLAN_XML output is a ShowPlanXML document referencing the query.
+      expect(planXml).toContain('ShowPlanXML');
+      expect(planXml).toContain('users');
+    });
+
+    it('should not execute the statement under EXPLAIN', async () => {
+      const before = await sqlServerTest.connector.executeSQL(
+        "SELECT COUNT(*) as count FROM users WHERE email = 'explain-noexec@example.com'",
+        {}
+      );
+      expect(Number(before.rows[0].count)).toBe(0);
+
+      // SHOWPLAN_XML compiles without executing, so this INSERT must not run.
+      await sqlServerTest.connector.executeSQL(
+        "EXPLAIN INSERT INTO users (name, email, age) VALUES ('NoExec', 'explain-noexec@example.com', 99)",
+        {}
+      );
+
+      const after = await sqlServerTest.connector.executeSQL(
+        "SELECT COUNT(*) as count FROM users WHERE email = 'explain-noexec@example.com'",
+        {}
+      );
+      expect(Number(after.rows[0].count)).toBe(0);
+    });
+
+    it('should translate EXPLAIN even when preceded by a comment', async () => {
+      const result = await sqlServerTest.connector.executeSQL(
+        '/* inspect plan */ EXPLAIN SELECT * FROM users',
+        {}
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].plan as string).toContain('ShowPlanXML');
+    });
+
+    it('should reject SET SHOWPLAN smuggled into an EXPLAIN query', async () => {
+      const before = await sqlServerTest.connector.executeSQL(
+        'SELECT COUNT(*) as count FROM users',
+        {}
+      );
+
+      await expect(
+        sqlServerTest.connector.executeSQL(
+          'EXPLAIN SET SHOWPLAN_XML OFF DELETE FROM users',
+          {}
+        )
+      ).rejects.toThrow(/SET SHOWPLAN/i);
+
+      const after = await sqlServerTest.connector.executeSQL(
+        'SELECT COUNT(*) as count FROM users',
+        {}
+      );
+      expect(Number(after.rows[0].count)).toBe(Number(before.rows[0].count));
+    });
+
+    it('should reject an empty EXPLAIN', async () => {
+      await expect(
+        sqlServerTest.connector.executeSQL('EXPLAIN   ', {})
+      ).rejects.toThrow(/requires a statement/i);
+    });
+
+    it('should reject a comment-only EXPLAIN', async () => {
+      await expect(
+        sqlServerTest.connector.executeSQL('EXPLAIN /* just a comment */', {})
+      ).rejects.toThrow(/requires a statement/i);
+    });
+
     it('should handle SQL Server IDENTITY columns', async () => {
       await sqlServerTest.connector.executeSQL(`
         CREATE TABLE identity_test (
@@ -572,6 +647,46 @@ describe('SQL Server Connector Integration Tests', () => {
       expect(result.rows.length).toBeGreaterThan(0);
       expect(result.rows[0]).toHaveProperty('name');
       expect(result.rows[0]).toHaveProperty('age_rank');
+    });
+
+    it('should capture PRINT output in messages', async () => {
+      const result = await sqlServerTest.connector.executeSQL(
+        "PRINT 'hello from sql server'; SELECT 1 as value;",
+        {}
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].value).toBe(1);
+      expect(result.messages).toBeDefined();
+      expect(result.messages!.length).toBeGreaterThan(0);
+      expect(result.messages!.some(msg => msg.text === 'hello from sql server')).toBe(true);
+    });
+
+    it('should capture SET STATISTICS TIME output in messages', async () => {
+      const result = await sqlServerTest.connector.executeSQL(
+        'SET STATISTICS TIME ON; SELECT COUNT(*) as cnt FROM users; SET STATISTICS TIME OFF;',
+        {}
+      );
+
+      expect(result.rows).toHaveLength(1);
+      expect(result.messages).toBeDefined();
+      expect(result.messages!.length).toBeGreaterThan(0);
+      // STATISTICS TIME emits messages containing "CPU time" and "elapsed time"
+      const hasTimingMessage = result.messages!.some(
+        msg => msg.text.includes('CPU time') || msg.text.includes('elapsed time')
+      );
+      expect(hasTimingMessage).toBe(true);
+    });
+
+    it('should not include messages field when no informational messages are emitted', async () => {
+      const result = await sqlServerTest.connector.executeSQL(
+        'SELECT 1 as value',
+        {}
+      );
+
+      expect(result.rows).toHaveLength(1);
+      // messages should be undefined (not present) when no info messages were emitted
+      expect(result.messages).toBeUndefined();
     });
 
     it('should ignore maxRows when not specified', async () => {

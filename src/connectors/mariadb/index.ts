@@ -57,6 +57,10 @@ class MariadbDSNParser implements DSNParser {
         ...(queryTimeoutSeconds !== undefined && {
           queryTimeout: queryTimeoutSeconds * 1000
         }),
+        // Controls how the driver interprets DATETIME values ("Z", "local", or "±HH:MM").
+        ...(config?.timezone !== undefined && {
+          timezone: config.timezone
+        }),
       };
 
       // Handle query parameters
@@ -152,10 +156,13 @@ export class MariaDBConnector implements Connector {
     }
 
     try {
-      // In MariaDB, schemas are equivalent to databases
+      // In MariaDB, schemas are equivalent to databases. Exclude server-level
+      // system databases so the list matches the user-facing schemas only
+      // (parity with the PostgreSQL connector, which hides pg_catalog et al.).
       const rows = await this.pool.query(`
-        SELECT SCHEMA_NAME 
+        SELECT SCHEMA_NAME
         FROM INFORMATION_SCHEMA.SCHEMATA
+        WHERE SCHEMA_NAME NOT IN ('information_schema', 'performance_schema', 'mysql', 'sys')
         ORDER BY SCHEMA_NAME
       `) as any[];
 
@@ -179,12 +186,13 @@ export class MariaDBConnector implements Connector {
 
       const queryParams = schema ? [schema] : [];
 
-      // Get all tables from the specified schema or current database
+      // Get all tables from the specified schema or current database (excludes views)
       const rows = await this.pool.query(
         `
-        SELECT TABLE_NAME 
-        FROM INFORMATION_SCHEMA.TABLES 
+        SELECT TABLE_NAME
+        FROM INFORMATION_SCHEMA.TABLES
         ${schemaClause}
+        AND TABLE_TYPE = 'BASE TABLE'
         ORDER BY TABLE_NAME
       `,
         queryParams
@@ -193,6 +201,33 @@ export class MariaDBConnector implements Connector {
       return rows.map((row) => row.TABLE_NAME);
     } catch (error) {
       console.error("Error getting tables:", error);
+      throw error;
+    }
+  }
+
+  async getViews(schema?: string): Promise<string[]> {
+    if (!this.pool) {
+      throw new Error("Not connected to database");
+    }
+
+    try {
+      const schemaClause = schema ? "WHERE TABLE_SCHEMA = ?" : "WHERE TABLE_SCHEMA = DATABASE()";
+      const queryParams = schema ? [schema] : [];
+
+      const rows = await this.pool.query(
+        `
+        SELECT TABLE_NAME
+        FROM INFORMATION_SCHEMA.TABLES
+        ${schemaClause}
+        AND TABLE_TYPE = 'VIEW'
+        ORDER BY TABLE_NAME
+      `,
+        queryParams
+      ) as any[];
+
+      return rows.map((row) => row.TABLE_NAME);
+    } catch (error) {
+      console.error("Error getting views:", error);
       throw error;
     }
   }
@@ -542,6 +577,19 @@ export class MariaDBConnector implements Connector {
     return rows[0].DB;
   }
 
+  /**
+   * Default search scope = the database named in the DSN. DATABASE() returns
+   * null when the connection was opened without a database, in which case
+   * callers fall back to the full server-wide schema list.
+   */
+  async getDefaultSchema(): Promise<string | null> {
+    if (!this.pool) {
+      throw new Error("Not connected to database");
+    }
+    const rows = await this.pool.query("SELECT DATABASE() AS DB") as any[];
+    return rows[0]?.DB ?? null;
+  }
+
   async executeSQL(sql: string, options: ExecuteOptions, parameters?: any[]): Promise<SQLResult> {
     if (!this.pool) {
       throw new Error("Not connected to database");
@@ -551,6 +599,18 @@ export class MariaDBConnector implements Connector {
     // This is critical for session-specific features like LAST_INSERT_ID()
     const conn = await this.pool.getConnection();
     try {
+      // Engine-level read-only backstop: run the batch inside a READ ONLY
+      // transaction so MariaDB rejects DML writes (INSERT/UPDATE/DELETE/REPLACE)
+      // that the keyword classifier missed (e.g. function-based writes). Note this
+      // does NOT stop DDL: statements like DROP/CREATE perform an implicit COMMIT
+      // that ends the read-only transaction first, so DDL escapes. Stacked-DDL
+      // payloads (e.g. `SELECT 1--1;DROP TABLE t`) are instead rejected upstream by
+      // the read-only classifier, which now splits `--`-hidden statements (see
+      // scanSingleLineCommentMySQL in sql-parser.ts).
+      if (options.readonly) {
+        await conn.query("START TRANSACTION READ ONLY");
+      }
+
       // Apply maxRows limit to SELECT queries if specified
       let processedSQL = sql;
       if (options.maxRows) {
@@ -586,8 +646,20 @@ export class MariaDBConnector implements Connector {
       // Parse results using shared utility that handles both single and multi-statement queries
       const rows = parseQueryResults(results);
       const rowCount = extractAffectedRows(results);
+
+      if (options.readonly) {
+        await conn.query("COMMIT");
+      }
       return { rows, rowCount };
     } catch (error) {
+      if (options.readonly) {
+        // Best-effort rollback so the connection returns to the pool clean.
+        try {
+          await conn.query("ROLLBACK");
+        } catch {
+          // ignore rollback failure; the original error is more useful
+        }
+      }
       console.error("Error executing query:", error);
       throw error;
     } finally {

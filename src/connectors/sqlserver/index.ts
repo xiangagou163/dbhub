@@ -5,6 +5,7 @@ import {
   ConnectorRegistry,
   DSNParser,
   SQLResult,
+  DatabaseMessage,
   TableColumn,
   TableIndex,
   StoredProcedure,
@@ -15,6 +16,7 @@ import { isDriverNotInstalled } from "../../utils/module-loader.js";
 import { SafeURL } from "../../utils/safe-url.js";
 import { obfuscateDSNPassword } from "../../utils/dsn-obfuscate.js";
 import { SQLRowLimiter } from "../../utils/sql-row-limiter.js";
+import { stripCommentsAndStrings } from "../../utils/sql-parser.js";
 
 /**
  * SQL Server DSN parser
@@ -171,6 +173,14 @@ export class SQLServerConnector implements Connector {
   // Source ID is set by ConnectorManager after cloning
   private sourceId: string = "default";
 
+  /**
+   * Leading whitespace and SQL comments to skip before looking for a keyword.
+   * The read-only validator strips comments before checking the first keyword,
+   * so the connector must skip them too; otherwise an EXPLAIN preceded by a
+   * comment passes validation but reaches the server untranslated.
+   */
+  private static readonly LEADING_NOISE = /^(?:\s+|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/;
+
   getId(): string {
     return this.sourceId;
   }
@@ -234,6 +244,7 @@ export class SQLServerConnector implements Connector {
           SELECT TABLE_NAME
           FROM INFORMATION_SCHEMA.TABLES
           WHERE TABLE_SCHEMA = @schema
+          AND TABLE_TYPE = 'BASE TABLE'
           ORDER BY TABLE_NAME
       `;
 
@@ -242,6 +253,32 @@ export class SQLServerConnector implements Connector {
       return result.recordset.map((row: { TABLE_NAME: any }) => row.TABLE_NAME);
     } catch (error) {
       throw new Error(`Failed to get tables: ${(error as Error).message}`);
+    }
+  }
+
+  async getViews(schema?: string): Promise<string[]> {
+    if (!this.connection) {
+      throw new Error("Not connected to SQL Server database");
+    }
+
+    try {
+      const schemaToUse = schema || "dbo";
+
+      const request = this.connection.request().input("schema", sql.VarChar, schemaToUse);
+
+      const query = `
+          SELECT TABLE_NAME
+          FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = @schema
+          AND TABLE_TYPE = 'VIEW'
+          ORDER BY TABLE_NAME
+      `;
+
+      const result = await request.query(query);
+
+      return result.recordset.map((row: { TABLE_NAME: any }) => row.TABLE_NAME);
+    } catch (error) {
+      throw new Error(`Failed to get views: ${(error as Error).message}`);
     }
   }
 
@@ -574,6 +611,17 @@ export class SQLServerConnector implements Connector {
       throw new Error("Not connected to SQL Server database");
     }
 
+    // SQL Server has no native EXPLAIN statement. Translate a leading `EXPLAIN`
+    // into a SHOWPLAN_XML request so callers get a Postgres/MySQL-like
+    // experience. SHOWPLAN_XML compiles the statement without executing it, so
+    // this is read-only safe (further enforced in explainQuery).
+    const afterNoise = sqlQuery.slice(
+      sqlQuery.match(SQLServerConnector.LEADING_NOISE)![0].length
+    );
+    if (/^explain\b/i.test(afterNoise)) {
+      return this.explainQuery(afterNoise.slice("explain".length).trim());
+    }
+
     try {
       // Apply maxRows limit to SELECT queries if specified
       let processedSQL = sqlQuery;
@@ -581,8 +629,30 @@ export class SQLServerConnector implements Connector {
         processedSQL = SQLRowLimiter.applyMaxRowsForSQLServer(sqlQuery, options.maxRows);
       }
 
-      // Create request and add parameters if provided
+      // Engine-level read-only enforcement: SQL Server has no
+      // BEGIN TRANSACTION READ ONLY, so we wrap in a transaction and
+      // unconditionally ROLLBACK to prevent any modifications from persisting.
+      // This is defense-in-depth behind the keyword classifier.
+      if (options.readonly) {
+        return await this.executeReadOnly(processedSQL, parameters);
+      }
+
+      // Create request and collect informational messages (e.g. SET STATISTICS TIME/IO, PRINT)
       const request = this.connection.request();
+      const messages: DatabaseMessage[] = [];
+      request.on(
+        'info',
+        (info: { message: string; number?: number; class?: number; lineNumber?: number }) => {
+          messages.push({
+            text: info.message,
+            // SQL Server reports severity as a numeric class; info messages are < 10.
+            severity: info.class !== undefined ? String(info.class) : undefined,
+            code: info.number,
+            line: info.lineNumber,
+          });
+        }
+      );
+
       if (parameters && parameters.length > 0) {
         // SQL Server uses @p1, @p2, etc. for parameters
         parameters.forEach((param, index) => {
@@ -625,9 +695,168 @@ export class SQLServerConnector implements Connector {
       return {
         rows: result.recordset || [],
         rowCount: result.rowsAffected[0] || 0,
+        ...(messages.length > 0 ? { messages } : {}),
       };
     } catch (error) {
       throw new Error(`Failed to execute query: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Execute a query inside a transaction that always rolls back, preventing
+   * any modifications from persisting. SQL Server has no native READ ONLY
+   * transaction mode, so this is the defense-in-depth backstop behind the
+   * keyword classifier.
+   *
+   * Because the rollback guard is application-level (not engine-enforced),
+   * we reject dangerous keywords in the stripped SQL before opening the
+   * transaction:
+   * - COMMIT/ROLLBACK: would end the outer transaction, letting writes persist
+   * - EXEC/EXECUTE/sp_executesql/xp_cmdshell: dynamic SQL can carry hidden
+   *   COMMIT/ROLLBACK inside string literals that stripCommentsAndStrings removes
+   */
+  private async executeReadOnly(
+    processedSQL: string,
+    parameters?: any[],
+  ): Promise<SQLResult> {
+    const cleaned = stripCommentsAndStrings(processedSQL, "sqlserver").toLowerCase();
+    if (/\b(?:commit|rollback)\b/.test(cleaned)) {
+      throw new Error(
+        "Read-only mode: transaction control statements (COMMIT, ROLLBACK) are not allowed",
+      );
+    }
+    if (/\b(?:exec|execute|sp_executesql|xp_cmdshell)\b/.test(cleaned)) {
+      throw new Error(
+        "Read-only mode: dynamic SQL execution (EXEC, EXECUTE, sp_executesql, xp_cmdshell) is not allowed",
+      );
+    }
+
+    const transaction = new sql.Transaction(this.connection!);
+    await transaction.begin();
+
+    const request = new sql.Request(transaction);
+    const messages: DatabaseMessage[] = [];
+    request.on(
+      'info',
+      (info: { message: string; number?: number; class?: number; lineNumber?: number }) => {
+        messages.push({
+          text: info.message,
+          severity: info.class !== undefined ? String(info.class) : undefined,
+          code: info.number,
+          line: info.lineNumber,
+        });
+      },
+    );
+
+    if (parameters && parameters.length > 0) {
+      parameters.forEach((param, index) => {
+        const paramName = `p${index + 1}`;
+        if (typeof param === 'string') {
+          request.input(paramName, sql.VarChar, param);
+        } else if (typeof param === 'number') {
+          if (Number.isInteger(param)) {
+            request.input(paramName, sql.Int, param);
+          } else {
+            request.input(paramName, sql.Float, param);
+          }
+        } else if (typeof param === 'boolean') {
+          request.input(paramName, sql.Bit, param);
+        } else if (param === null || param === undefined) {
+          request.input(paramName, sql.VarChar, param);
+        } else if (Array.isArray(param)) {
+          request.input(paramName, sql.VarChar, JSON.stringify(param));
+        } else {
+          request.input(paramName, sql.VarChar, JSON.stringify(param));
+        }
+      });
+    }
+
+    let result;
+    let queryFailed = false;
+    try {
+      result = await request.query(processedSQL);
+    } catch (error) {
+      queryFailed = true;
+      console.error(`[SQL Server executeReadOnly] ERROR: ${(error as Error).message}`);
+      console.error(`[SQL Server executeReadOnly] SQL: ${processedSQL}`);
+      if (parameters && parameters.length > 0) {
+        console.error(`[SQL Server executeReadOnly] Parameters: ${JSON.stringify(parameters)}`);
+      }
+      throw error;
+    } finally {
+      try {
+        await transaction.rollback();
+      } catch (rollbackError) {
+        if (!queryFailed) {
+          throw new Error(
+            `Read-only rollback failed — data may have been modified: ${(rollbackError as Error).message}`,
+          );
+        }
+      }
+    }
+    return {
+      rows: result.recordset || [],
+      rowCount: result.rowsAffected[0] || 0,
+      ...(messages.length > 0 ? { messages } : {}),
+    };
+  }
+
+  /**
+   * Return the estimated execution plan for a query using SHOWPLAN_XML.
+   *
+   * SHOWPLAN_XML compiles the statement and returns its plan without executing
+   * it, but it has two constraints: `SET SHOWPLAN_XML ON` must be the only
+   * statement in its batch, and the setting is session scoped. The shared pool
+   * hands out a fresh connection per request() and an open transaction
+   * suppresses SHOWPLAN, so neither can carry the setting to a follow-up query.
+   *
+   * We therefore run the SET / query pair on a short-lived, single-connection
+   * pool built from the same config. The dedicated session keeps SHOWPLAN state
+   * off the shared pool, so a concurrent query can never land on a connection
+   * with SHOWPLAN enabled (which would return a plan instead of its results).
+   */
+  private async explainQuery(innerQuery: string): Promise<SQLResult> {
+    // Validate against comment/string-stripped SQL so comment-only input counts
+    // as empty and a SET SHOWPLAN can't hide behind comments.
+    const cleaned = stripCommentsAndStrings(innerQuery, "sqlserver").trim();
+    if (!cleaned) {
+      throw new Error("EXPLAIN requires a statement to analyze");
+    }
+
+    // Defense in depth: the SET SHOWPLAN session toggle is what makes EXPLAIN
+    // non-executing, so the explained statement must not disable it. SQL Server
+    // already rejects `SET SHOWPLAN_* OFF` alongside other statements in a
+    // batch, but enforcing it here keeps the read-only guarantee self-contained.
+    if (/\bset\s+showplan/i.test(cleaned)) {
+      throw new Error("EXPLAIN does not support SET SHOWPLAN statements");
+    }
+
+    if (!this.config) {
+      throw new Error("Not connected to SQL Server database");
+    }
+
+    const explainPool = new sql.ConnectionPool({
+      ...this.config,
+      pool: { ...this.config.pool, max: 1, min: 1 },
+    });
+
+    try {
+      await explainPool.connect();
+      // max:1 + sequential awaits guarantee both batches hit the same session.
+      await explainPool.request().batch("SET SHOWPLAN_XML ON");
+      const planResult = await explainPool.request().batch(innerQuery);
+
+      // The plan is returned as the single column of the first row.
+      const planRow = planResult.recordset?.[0];
+      const planXml = planRow ? Object.values(planRow)[0] : null;
+      return {
+        rows: planXml != null ? [{ plan: planXml }] : [],
+        rowCount: planXml != null ? 1 : 0,
+      };
+    } catch (error) {
+      throw new Error(`Failed to explain query: ${(error as Error).message}`);
+    } finally {
+      await explainPool.close();
     }
   }
 }

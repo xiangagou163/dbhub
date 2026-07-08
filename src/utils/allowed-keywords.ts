@@ -11,7 +11,9 @@ export const allowedKeywords: Record<ConnectorType, string[]> = {
   mysql: ["select", "with", "explain", "show", "describe", "desc"],
   mariadb: ["select", "with", "explain", "show", "describe", "desc"],
   sqlite: ["select", "with", "explain", "pragma"],
-  sqlserver: ["select", "with", "explain", "showplan"],
+  // SQL Server has no native EXPLAIN statement; the connector translates a
+  // leading `EXPLAIN` into a SET SHOWPLAN_XML request (see SQLServerConnector).
+  sqlserver: ["select", "with", "explain"],
   tdengine: ["select", "with", "explain", "show", "describe", "desc"],
 };
 
@@ -49,16 +51,46 @@ const mutatingPatternWithReplace = new RegExp(
   "i",
 );
 
+/**
+ * Extended pattern for SQL Server: adds T-SQL dynamic SQL primitives that can
+ * run arbitrary (including mutating) statements.
+ * - EXEC/EXECUTE: direct dynamic SQL execution
+ * - sp_executesql: system proc for parameterized dynamic SQL (callable without
+ *   EXEC as the first statement in a batch)
+ * - xp_cmdshell: OS command execution
+ */
+const mutatingPatternSqlServer = new RegExp(
+  `\\b(?:${[...mutatingKeywords, "execute", "exec", "sp_executesql", "xp_cmdshell"].join("|")})\\b`,
+  "i",
+);
+
 /** Per-dialect mutating keyword pattern */
 const mutatingPatterns: Record<ConnectorType, RegExp> = {
   postgres: mutatingPattern,
   mysql: mutatingPatternWithReplace,
   mariadb: mutatingPatternWithReplace,
   sqlite: mutatingPatternWithReplace,
-  sqlserver: mutatingPattern,
+  sqlserver: mutatingPatternSqlServer,
+  tdengine: mutatingPattern,
 };
 
 const selectIntoPattern = /\bselect\b[\s\S]+\binto\b/i;
+
+/**
+ * SQLite read-only introspection pragmas that legitimately take a parenthesized
+ * argument (a table/index name) and return rows without mutating state. Any other
+ * pragma using the parenthesized form is a setter (e.g. `PRAGMA user_version(1)`,
+ * `PRAGMA query_only(0)`), which SQLite treats identically to the `= value` form.
+ */
+const sqliteReadOnlyArgPragmas = new Set([
+  "table_info",
+  "index_info",
+  "index_list",
+  "foreign_key_list",
+]);
+
+/** Matches `PRAGMA [schema.]name(` to extract the pragma name of the parenthesized form. */
+const sqlitePragmaParenPattern = /^pragma\s+(?:[a-z0-9_]+\.)?([a-z0-9_]+)\s*\(/;
 
 /** Matches EXPLAIN ANALYZE (or parenthesized form), excluding disabled forms (false/off/0) */
 const explainAnalyzePattern =
@@ -98,6 +130,23 @@ function checkReadOnly(cleanedSQL: string, connectorType: ConnectorType | string
   if (firstWord === "with") {
     const pattern = mutatingPatterns[connectorType as ConnectorType] ?? mutatingPattern;
     if (pattern.test(cleanedSQL)) {
+      return false;
+    }
+  }
+
+  // SQLite PRAGMA: a pragma that sets a value mutates durable or session state and
+  // must not classify as read-only. SQLite accepts a setter in two equivalent
+  // forms — `PRAGMA name = value` and `PRAGMA name(value)` — so checking for `=`
+  // alone is not enough. Reject the assignment form, and reject the parenthesized
+  // form unless the pragma is a known introspection pragma (e.g. `table_info(t)`)
+  // that takes an argument purely to return rows. The bare query form
+  // (`PRAGMA user_version`) returns the value and is allowed.
+  if (firstWord === "pragma" && connectorType === "sqlite") {
+    if (cleanedSQL.includes("=")) {
+      return false;
+    }
+    const parenMatch = cleanedSQL.match(sqlitePragmaParenPattern);
+    if (parenMatch && !sqliteReadOnlyArgPragmas.has(parenMatch[1])) {
       return false;
     }
   }

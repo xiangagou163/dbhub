@@ -1,13 +1,14 @@
 import { Connector, ConnectorType, ConnectorRegistry, ExecuteOptions, ConnectorConfig } from "./interface.js";
 import { SSHTunnel } from "../utils/ssh-tunnel.js";
-import type { SSHTunnelConfig } from "../types/ssh.js";
+import type { SSHTunnelConfig, SSHTunnelInfo } from "../types/ssh.js";
 import type { SourceConfig } from "../types/config.js";
 import { buildDSNFromSource } from "../config/toml-loader.js";
 import { getDatabaseTypeFromDSN, getDefaultPortForType } from "../utils/dsn-obfuscate.js";
 import { redactDSN } from "../config/env.js";
 import { SafeURL } from "../utils/safe-url.js";
 import { generateRdsAuthToken } from "../utils/aws-rds-signer.js";
-import { parseSSHConfig, looksLikeSSHAlias, getDefaultSSHConfigPath } from "../utils/ssh-config-parser.js";
+import { parseSSHConfig, looksLikeSSHAlias, getDefaultSSHConfigPath, resolveJumpHosts } from "../utils/ssh-config-parser.js";
+import { TUNNEL_ERROR_MARKER } from "../utils/error-classifier.js";
 
 // Singleton instance for global access
 let managerInstance: ConnectorManager | null = null;
@@ -148,16 +149,32 @@ export class ConnectorManager {
     // Setup SSH tunnel if needed
     let actualDSN = dsn;
     if (source.ssh_host) {
+      const sshConfigPath = getDefaultSSHConfigPath();
       // If ssh_host looks like an SSH config alias, resolve from ~/.ssh/config
       let resolvedSSHConfig: SSHTunnelConfig | null = null;
       if (looksLikeSSHAlias(source.ssh_host)) {
-        const sshConfigPath = getDefaultSSHConfigPath();
         console.error(`  Resolving SSH config for host '${source.ssh_host}' from: ${sshConfigPath}`);
         resolvedSSHConfig = parseSSHConfig(source.ssh_host, sshConfigPath);
       }
 
       // Build SSH config: explicit TOML fields override SSH config values
       const username = source.ssh_user || resolvedSSHConfig?.username;
+      const proxyJump = source.ssh_proxy_jump || resolvedSSHConfig?.proxyJump;
+
+      // Resolve the jump-host chain so alias hops (and nested ProxyJump) carry their own
+      // host/user/port/key from ~/.ssh/config, matching `ssh`. This can throw (e.g. a
+      // cyclic ProxyJump or invalid token); tag such failures as tunnel errors so they're
+      // classified consistently with tunnel.establish() failures.
+      let resolvedJumpHosts: SSHTunnelConfig["resolvedJumpHosts"];
+      try {
+        resolvedJumpHosts = proxyJump ? resolveJumpHosts(proxyJump, sshConfigPath) : undefined;
+      } catch (error) {
+        if (error && typeof error === "object") {
+          (error as Record<string, unknown>)[TUNNEL_ERROR_MARKER] = true;
+        }
+        throw error;
+      }
+
       const sshConfig: SSHTunnelConfig = {
         host: resolvedSSHConfig?.host || source.ssh_host,
         port: source.ssh_port || resolvedSSHConfig?.port || 22,
@@ -165,7 +182,8 @@ export class ConnectorManager {
         password: source.ssh_password,
         privateKey: source.ssh_key || resolvedSSHConfig?.privateKey,
         passphrase: source.ssh_passphrase,
-        proxyJump: source.ssh_proxy_jump || resolvedSSHConfig?.proxyJump,
+        proxyJump,
+        resolvedJumpHosts,
         keepaliveInterval: source.ssh_keepalive_interval,
         keepaliveCountMax: source.ssh_keepalive_count_max,
       };
@@ -191,10 +209,18 @@ export class ConnectorManager {
 
       // Create and establish SSH tunnel
       const tunnel = new SSHTunnel();
-      const tunnelInfo = await tunnel.establish(sshConfig, {
-        targetHost,
-        targetPort,
-      });
+      let tunnelInfo: SSHTunnelInfo;
+      try {
+        tunnelInfo = await tunnel.establish(sshConfig, {
+          targetHost,
+          targetPort,
+        });
+      } catch (error) {
+        if (error && typeof error === "object") {
+          (error as Record<string, unknown>)[TUNNEL_ERROR_MARKER] = true;
+        }
+        throw error;
+      }
 
       // Update DSN to use local tunnel endpoint
       url.hostname = "127.0.0.1";
@@ -233,13 +259,19 @@ export class ConnectorManager {
     if (source.query_timeout !== undefined && connector.id !== 'sqlite') {
       config.queryTimeoutSeconds = source.query_timeout;
     }
-    // Pass readonly flag for SDK-level enforcement (PostgreSQL, SQLite)
-    if (source.readonly !== undefined) {
-      config.readonly = source.readonly;
-    }
+    // Note: read-only enforcement is per-tool, not per-source. It is applied at
+    // execution time via ExecuteOptions.readonly. Some connectors also add an
+    // engine-level backstop in executeSQL (e.g. READ ONLY transactions or SQLite PRAGMA query_only),
+    // because a single source connection may be shared by both read-only and
+    // writable tools. ConnectorConfig.readonly (connection-level) remains supported
+    // for direct connector use but is intentionally not wired from source config.
     // Pass search_path for PostgreSQL
     if (source.search_path) {
       config.searchPath = source.search_path;
+    }
+    // Pass timezone for MySQL/MariaDB
+    if (source.timezone) {
+      config.timezone = source.timezone;
     }
 
     // Connect to the database with config and optional init script
@@ -522,8 +554,10 @@ export class ConnectorManager {
     });
 
     const queryParams = new Map(parsed.searchParams);
-    // IAM DB authentication requires SSL/TLS.
-    queryParams.set("sslmode", "require");
+    const currentSslMode = queryParams.get("sslmode");
+    if (currentSslMode !== "verify-ca" && currentSslMode !== "verify-full") {
+      queryParams.set("sslmode", "require");
+    }
 
     const protocol = parsed.protocol.endsWith(":")
       ? parsed.protocol.slice(0, -1)
